@@ -2,6 +2,7 @@ import { resolveRuntimeConfig, validateRuntimeConfig } from './config.js';
 import { createRedactor } from './redaction.js';
 import { createSubprocessRunner } from './subprocess/runner.js';
 import { createFilesystemCollector } from './filesystem/collector.js';
+import { createCapabilityRegistry } from './capabilities/registry.js';
 import { createOpenAICompatibleProvider } from './model/openaiCompatibleProvider.js';
 import { createAdmissionController } from './admission/controller.js';
 import { createLifecycleManager } from './lifecycle/manager.js';
@@ -26,6 +27,7 @@ export function createHarness({ env = process.env, rootPath, outputDir, provider
     limits: config.limits,
     redactor
   });
+  const capabilities = createCapabilityRegistry({ rootPath, collector });
 
   const reviewProvider = provider ?? createOpenAICompatibleProvider(config.model);
   const admission = createAdmissionController({
@@ -40,7 +42,7 @@ export function createHarness({ env = process.env, rootPath, outputDir, provider
 
   const reviewOrchestrator = createReviewOrchestrator({
     config,
-    collector,
+    capabilities,
     provider: reviewProvider,
     admission,
     lifecycle

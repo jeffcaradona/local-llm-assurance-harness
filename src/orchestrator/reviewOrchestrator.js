@@ -7,7 +7,26 @@ import { renderReviewReport } from '../reporting/render.js';
 import { persistRunArtifacts } from '../audit/manifest.js';
 import { REVIEW_SCHEMA_VERSION } from '../review/schema.js';
 
-export function createReviewOrchestrator({ config, collector, provider, admission, lifecycle }) {
+function makeEvidenceId(index) {
+  return `ev-${String(index + 1).padStart(4, '0')}`;
+}
+
+function withEvidenceMeta(record, capability, index) {
+  return {
+    id: makeEvidenceId(index),
+    capability,
+    sourcePath: record.relativePath,
+    lineRange: record.lineStart ? [record.lineStart, record.lineEnd] : null,
+    content: record.content,
+    collectedAt: new Date().toISOString(),
+    retainedBytes: record.retainedBytes,
+    originalBytes: record.originalBytes,
+    truncated: record.truncated,
+    redaction: record.redaction
+  };
+}
+
+export function createReviewOrchestrator({ config, capabilities, provider, admission, lifecycle }) {
   return {
     async review({ rootPath, selectedFiles = [], searches = [], request, format = 'terminal', instructionFiles = [], includeReplay = false, signal }) {
       if (!request) {
@@ -20,19 +39,48 @@ export function createReviewOrchestrator({ config, collector, provider, admissio
 
       try {
         const reviewRoot = resolve(rootPath);
-        const evidence = await collector.collect({ selectedFiles, searches, signal: AbortSignal.any([signal, scope.signal].filter(Boolean)) });
+        const activeSignal = AbortSignal.any([signal, scope.signal].filter(Boolean));
+        const findFiles = capabilities.get('filesystem.findFiles');
+        const readTextFile = capabilities.get('filesystem.readTextFile');
+        const searchText = capabilities.get('filesystem.searchText');
+        const evidence = [];
+        let totalBytes = 0;
+
+        const fileList = selectedFiles.length
+          ? [...new Set(selectedFiles)].sort()
+          : await findFiles.invoke({ signal: activeSignal, limit: config.limits.maxFiles });
+
+        for (const file of fileList) {
+          if (totalBytes >= config.limits.maxEvidenceBytes) break;
+          const record = await readTextFile.invoke({ path: file, signal: activeSignal, maxBytes: config.limits.maxFileBytes });
+          const item = withEvidenceMeta(record, 'filesystem.readTextFile', evidence.length);
+          evidence.push(item);
+          totalBytes += item.retainedBytes;
+        }
+
+        for (const pattern of searches) {
+          if (totalBytes >= config.limits.maxEvidenceBytes) break;
+          const records = await searchText.invoke({ pattern, signal: activeSignal, maxMatches: config.limits.maxSearchMatches });
+          for (const record of records) {
+            const item = withEvidenceMeta(record, 'filesystem.searchText', evidence.length);
+            if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes) break;
+            evidence.push(item);
+            totalBytes += item.retainedBytes;
+          }
+        }
+
         const context = await compilePromptContext({
           request,
           evidence,
           instructionFiles,
           maxChars: config.model.maxPromptChars,
-          signal: AbortSignal.any([signal, scope.signal].filter(Boolean))
+          signal: activeSignal
         });
 
         const review = await provider.complete({
           systemPrompt: context.systemPrompt,
           userPrompt: context.userPrompt,
-          signal: AbortSignal.any([signal, scope.signal].filter(Boolean))
+          signal: activeSignal
         });
 
         validateReviewPayload(review);

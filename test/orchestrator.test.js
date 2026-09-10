@@ -15,20 +15,24 @@ test('review orchestration persists sanitized manifest and replay', async () => 
   const admission = createAdmissionController({ maxActive: 1, maxQueued: 1 });
   const lifecycle = createLifecycleManager({ admission, shutdownGraceMs: 10, shutdownDeadlineMs: 30 });
 
-  const collector = {
-    collect: async () => [
-      {
-        id: 'ev-0001',
-        capability: 'filesystem.readTextFile',
-        sourcePath: 'src/a.js',
-        lineRange: [1, 1],
-        content: 'token=[REDACTED_FIELD]',
-        retainedBytes: 20,
-        originalBytes: 20,
-        truncated: false,
-        redaction: { explicitSecrets: 1 }
-      }
-    ]
+  const collectorRecord = {
+    relativePath: 'src/a.js',
+    lineStart: 1,
+    lineEnd: 1,
+    content: 'token=[REDACTED_FIELD]',
+    retainedBytes: 20,
+    originalBytes: 20,
+    truncated: false,
+    redaction: { explicitSecrets: 1 }
+  };
+
+  const capabilities = {
+    get(name) {
+      if (name === 'filesystem.findFiles') return { invoke: async () => ['src/a.js'] };
+      if (name === 'filesystem.readTextFile') return { invoke: async () => collectorRecord };
+      if (name === 'filesystem.searchText') return { invoke: async () => [] };
+      throw new Error(`Unknown capability: ${name}`);
+    }
   };
 
   const reviewPayload = {
@@ -44,8 +48,8 @@ test('review orchestration persists sanitized manifest and replay', async () => 
   const provider = { complete: async () => reviewPayload };
 
   const orchestrator = createReviewOrchestrator({
-    config: { model: { maxPromptChars: 2000 }, review: { outputDir: out } },
-    collector,
+    config: { model: { maxPromptChars: 2000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
+    capabilities,
     provider,
     admission,
     lifecycle
