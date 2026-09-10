@@ -79,6 +79,7 @@ export async function runCli({ argv = process.argv.slice(2), env = process.env, 
   } finally {
     process.removeListener('SIGINT', shutdown);
     process.removeListener('SIGTERM', shutdown);
+    await harness.shutdown();
   }
 }
 

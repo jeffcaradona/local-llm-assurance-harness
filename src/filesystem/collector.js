@@ -173,8 +173,7 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
 
       for (const pathText of files) {
         if (totalBytes >= limits.maxEvidenceBytes) break;
-        const absolute = resolve(await canonicalRootPromise, pathText);
-        const item = await readTextFile({ absolutePath: absolute, relativePath: pathText, signal, maxBytes: limits.maxFileBytes });
+        const item = await readTextFile({ path: pathText, signal, maxBytes: limits.maxFileBytes });
         const [ev] = await toEvidenceItems([item], 'filesystem.readTextFile');
         ev.id = makeEvidenceId(evidence.length);
         evidence.push(ev);

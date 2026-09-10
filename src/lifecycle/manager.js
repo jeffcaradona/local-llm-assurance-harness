@@ -21,7 +21,8 @@ export function createLifecycleManager({ admission, shutdownGraceMs, shutdownDea
       shuttingDown = true;
       admission.close();
 
-      const graceEnd = Date.now() + shutdownGraceMs;
+      const deadline = Date.now() + shutdownDeadlineMs;
+      const graceEnd = Math.min(Date.now() + shutdownGraceMs, deadline);
       while (admission.stats().active > 0 && Date.now() < graceEnd) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -30,7 +31,6 @@ export function createLifecycleManager({ admission, shutdownGraceMs, shutdownDea
         controller.abort();
       }
 
-      const deadline = Date.now() + shutdownDeadlineMs;
       while (admission.stats().active > 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }

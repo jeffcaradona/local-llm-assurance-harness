@@ -54,11 +54,11 @@ export function createCapabilityRegistry({ rootPath, collector }) {
       inputContract: { type: 'object', required: ['path'], additionalProperties: false },
       invoke: async ({ path, signal, maxBytes }) => {
         ensureNoOptionInjection(path, 'path');
-        const absolutePath = assertInRoot(path);
+        assertInRoot(path);
         if (isLikelySensitivePath(path)) {
           throw new HarnessError('E_SENSITIVE_PATH_BLOCKED', 'Sensitive file path blocked by policy.', { path });
         }
-        return collector.readTextFile({ path, signal, maxBytes, absolutePath });
+        return collector.readTextFile({ path, signal, maxBytes });
       }
     },
     'filesystem.searchText': {

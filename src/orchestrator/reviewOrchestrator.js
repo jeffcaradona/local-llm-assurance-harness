@@ -33,11 +33,13 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         throw new HarnessError('E_REVIEW_REQUEST_REQUIRED', 'Review request text is required.');
       }
 
-      await admission.acquire(signal);
       const scope = lifecycle.createRequestScope();
+      let acquired = false;
       const runId = randomUUID();
 
       try {
+        await admission.acquire(signal);
+        acquired = true;
         const reviewRoot = resolve(rootPath);
         const activeSignal = AbortSignal.any([signal, scope.signal].filter(Boolean));
         const collectedAt = new Date().toISOString();
@@ -149,7 +151,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         throw asHarnessError(error);
       } finally {
         scope.done();
-        admission.release();
+        if (acquired) admission.release();
       }
     }
   };
