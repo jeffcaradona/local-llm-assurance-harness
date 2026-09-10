@@ -1,0 +1,106 @@
+import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { HarnessError, asHarnessError } from '../errors.js';
+import { compilePromptContext } from '../context/compiler.js';
+import { validateReviewPayload, verifyEvidenceReferences } from '../review/validator.js';
+import { renderReviewReport } from '../reporting/render.js';
+import { persistRunArtifacts } from '../audit/manifest.js';
+import { REVIEW_SCHEMA_VERSION } from '../review/schema.js';
+
+export function createReviewOrchestrator({ config, collector, provider, admission, lifecycle }) {
+  return {
+    async review({ rootPath, selectedFiles = [], searches = [], request, format = 'terminal', instructionFiles = [], includeReplay = false, signal }) {
+      if (!request) {
+        throw new HarnessError('E_REVIEW_REQUEST_REQUIRED', 'Review request text is required.');
+      }
+
+      await admission.acquire(signal);
+      const scope = lifecycle.createRequestScope();
+      const runId = randomUUID();
+
+      try {
+        const reviewRoot = resolve(rootPath);
+        const evidence = await collector.collect({ selectedFiles, searches, signal: AbortSignal.any([signal, scope.signal].filter(Boolean)) });
+        const context = await compilePromptContext({
+          request,
+          evidence,
+          instructionFiles,
+          maxChars: config.model.maxPromptChars,
+          signal: AbortSignal.any([signal, scope.signal].filter(Boolean))
+        });
+
+        const review = await provider.complete({
+          systemPrompt: context.systemPrompt,
+          userPrompt: context.userPrompt,
+          signal: AbortSignal.any([signal, scope.signal].filter(Boolean))
+        });
+
+        validateReviewPayload(review);
+        verifyEvidenceReferences(review, context.includedEvidenceIds);
+
+        const reportText = renderReviewReport({
+          format,
+          review,
+          request,
+          includedEvidenceIds: context.includedEvidenceIds,
+          omittedEvidenceIds: context.omittedEvidenceIds,
+          runId
+        });
+
+        const manifest = {
+          runId,
+          createdAt: new Date().toISOString(),
+          rootPath: reviewRoot,
+          request,
+          status: 'success',
+          decision: review.decision,
+          schemaVersion: REVIEW_SCHEMA_VERSION,
+          format,
+          evidenceSummary: evidence.map((item) => ({
+            id: item.id,
+            capability: item.capability,
+            sourcePath: item.sourcePath,
+            lineRange: item.lineRange,
+            retainedBytes: item.retainedBytes,
+            originalBytes: item.originalBytes,
+            truncated: item.truncated,
+            redaction: item.redaction
+          })),
+          includedEvidenceIds: context.includedEvidenceIds,
+          omittedEvidenceIds: context.omittedEvidenceIds
+        };
+
+        const replayBundle = includeReplay
+          ? {
+              runId,
+              systemPrompt: context.systemPrompt,
+              userPrompt: context.userPrompt,
+              includedEvidenceIds: context.includedEvidenceIds,
+              omittedEvidenceIds: context.omittedEvidenceIds,
+              review
+            }
+          : undefined;
+
+        const paths = await persistRunArtifacts({
+          outputDir: config.review.outputDir,
+          reviewedRoot: reviewRoot,
+          runId,
+          manifest,
+          replayBundle
+        });
+
+        return {
+          runId,
+          reportText,
+          manifestPath: paths.manifestPath,
+          replayPath: paths.replayPath
+        };
+      } catch (error) {
+        throw asHarnessError(error);
+      } finally {
+        scope.done();
+        admission.release();
+      }
+    }
+  };
+}

@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Harness local artifacts and configs
+harness-runs/
+*.manifest.json
+*.replay.json
+.local-llm-assurance-harness*
+.kube/
+*.kubeconfig
+*.pem
+*.key
