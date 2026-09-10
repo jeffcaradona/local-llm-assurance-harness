@@ -14,7 +14,7 @@ export function createReplayOrchestrator() {
       }
 
       validateReviewPayload(bundle.review);
-      verifyEvidenceReferences(bundle.review, bundle.includedEvidenceIds);
+      verifyEvidenceReferences(bundle.review, [...bundle.includedEvidenceIds, ...(bundle.omittedEvidenceIds ?? [])]);
 
       return renderReviewReport({
         format,

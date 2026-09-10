@@ -84,7 +84,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         });
 
         validateReviewPayload(review);
-        verifyEvidenceReferences(review, context.includedEvidenceIds);
+        verifyEvidenceReferences(review, [...context.includedEvidenceIds, ...context.omittedEvidenceIds]);
 
         const reportText = renderReviewReport({
           format,

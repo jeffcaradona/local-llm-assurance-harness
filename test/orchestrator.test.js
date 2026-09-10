@@ -75,7 +75,7 @@ test('replay validates without external dependencies', async () => {
     JSON.stringify({
       runId: 'r1',
       includedEvidenceIds: ['ev-0001'],
-      omittedEvidenceIds: [],
+      omittedEvidenceIds: ['ev-0002'],
       review: {
         schemaVersion: REVIEW_SCHEMA_VERSION,
         summary: 'offline',
@@ -83,7 +83,7 @@ test('replay validates without external dependencies', async () => {
         observations: [],
         inferences: [],
         findings: [],
-        limitations: { notes: [], omittedEvidenceIds: [] }
+        limitations: { notes: [], omittedEvidenceIds: ['ev-0002'] }
       }
     })
   );

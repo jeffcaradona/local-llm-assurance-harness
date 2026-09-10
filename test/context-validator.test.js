@@ -6,10 +6,10 @@ import { REVIEW_SCHEMA_VERSION } from '../src/review/schema.js';
 
 test('context compilation is deterministic and tracks omissions', async () => {
   const evidence = [
-    { id: 'ev-0002', sourcePath: 'b.js', lineRange: [1, 1], content: 'bbbb' },
-    { id: 'ev-0001', sourcePath: 'a.js', lineRange: [1, 1], content: 'aaaa' }
+    { id: 'ev-0002', sourcePath: 'b.js', lineRange: [1, 1], content: 'b'.repeat(2000) },
+    { id: 'ev-0001', sourcePath: 'a.js', lineRange: [1, 1], content: 'a' }
   ];
-  const context = await compilePromptContext({ request: 'r', evidence, instructionFiles: [], maxChars: 30 });
+  const context = await compilePromptContext({ request: 'r', evidence, instructionFiles: [], maxChars: 1000 });
   assert.deepEqual(context.includedEvidenceIds, ['ev-0001']);
   assert.deepEqual(context.omittedEvidenceIds, ['ev-0002']);
 });

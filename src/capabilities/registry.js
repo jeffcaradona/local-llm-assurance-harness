@@ -23,14 +23,17 @@ function ensureNoOptionInjection(value, field) {
   }
 }
 
+function escapesRoot(relPath) {
+  return relPath === '..' || relPath.startsWith('../') || relPath.startsWith('..\\');
+}
+
 export function createCapabilityRegistry({ rootPath, collector }) {
   const canonicalRoot = resolve(rootPath);
 
   function assertInRoot(pathText) {
     const absolute = resolve(canonicalRoot, pathText);
     const rel = relative(canonicalRoot, absolute);
-    if (rel.startsWith('..') || rel === '') {
-      if (rel === '') return absolute;
+    if (escapesRoot(rel)) {
       throw new HarnessError('E_PATH_OUT_OF_ROOT', 'Path escapes allowed root.', { pathText });
     }
     return absolute;

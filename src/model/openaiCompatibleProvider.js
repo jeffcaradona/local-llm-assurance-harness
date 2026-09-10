@@ -20,7 +20,8 @@ async function readBodyBounded(response, maxBytes) {
 }
 
 export function createOpenAICompatibleProvider(config) {
-  const endpoint = new URL('/chat/completions', config.baseUrl).toString();
+  const normalizedBase = config.baseUrl.endsWith('/') ? config.baseUrl : `${config.baseUrl}/`;
+  const endpoint = new URL('chat/completions', normalizedBase).toString();
 
   return {
     async complete({ systemPrompt, userPrompt, signal }) {

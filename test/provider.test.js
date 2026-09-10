@@ -31,7 +31,9 @@ test('provider rejects oversized response body', async () => {
 });
 
 test('provider parses OpenAI-compatible JSON content', async () => {
+  let seenPath = '';
   const server = await withServer((_, res) => {
+    seenPath = _.url;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({ choices: [{ message: { content: JSON.stringify({ schemaVersion: '1.0.0', summary: 'ok', decision: 'no_findings_in_supplied_evidence', observations: [], inferences: [], findings: [], limitations: { notes: [], omittedEvidenceIds: [] } }) } }] })
@@ -48,5 +50,6 @@ test('provider parses OpenAI-compatible JSON content', async () => {
 
   const out = await provider.complete({ systemPrompt: 's', userPrompt: 'u' });
   assert.equal(out.summary, 'ok');
+  assert.equal(seenPath, '/v1/chat/completions');
   await new Promise((resolve) => server.close(resolve));
 });

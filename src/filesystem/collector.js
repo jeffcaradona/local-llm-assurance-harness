@@ -10,6 +10,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function escapesRoot(relPath) {
+  return relPath === '..' || relPath.startsWith('../') || relPath.startsWith('..\\');
+}
+
 export function createFilesystemCollector({ rootPath, runner, limits, redactor }) {
   const canonicalRootPromise = realpath(resolve(rootPath));
 
@@ -17,8 +21,7 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
     const rootReal = await canonicalRootPromise;
     const resolved = await realpath(absolutePath);
     const rel = relative(rootReal, resolved);
-    if (rel.startsWith('..') || rel === '') {
-      if (rel === '') return;
+    if (escapesRoot(rel)) {
       throw new HarnessError('E_PATH_OUT_OF_ROOT', 'Path escapes approved root.', { absolutePath });
     }
   }
