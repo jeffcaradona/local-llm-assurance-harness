@@ -9,7 +9,7 @@ test('context compilation is deterministic and tracks omissions', async () => {
     { id: 'ev-0002', sourcePath: 'b.js', lineRange: [1, 1], content: 'bbbb' },
     { id: 'ev-0001', sourcePath: 'a.js', lineRange: [1, 1], content: 'aaaa' }
   ];
-  const context = await compilePromptContext({ request: 'r', evidence, instructionFiles: [], maxChars: 20 });
+  const context = await compilePromptContext({ request: 'r', evidence, instructionFiles: [], maxChars: 30 });
   assert.deepEqual(context.includedEvidenceIds, ['ev-0001']);
   assert.deepEqual(context.omittedEvidenceIds, ['ev-0002']);
 });
