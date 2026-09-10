@@ -1,4 +1,4 @@
-import { lstat, open, readFile, realpath } from 'node:fs/promises';
+import { lstat, open, realpath } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import { HarnessError } from '../errors.js';
 
@@ -24,17 +24,29 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
     if (escapesRoot(rel)) {
       throw new HarnessError('E_PATH_OUT_OF_ROOT', 'Path escapes approved root.', { absolutePath });
     }
+    return { rootReal };
   }
 
-  async function readBoundedText(absolutePath, maxBytes) {
-    const stat = await lstat(absolutePath);
-    if (stat.isSymbolicLink()) {
+  async function readBoundedText(absolutePath, maxBytes, rootReal) {
+    const pathStat = await lstat(absolutePath);
+    if (pathStat.isSymbolicLink()) {
       throw new HarnessError('E_SYMLINK_BLOCKED', 'Symlink paths are not collected.', { absolutePath });
     }
 
     const file = await open(absolutePath, 'r');
     try {
-      const retain = Math.min(stat.size, maxBytes);
+      const handleStat = await file.stat();
+      const postResolvedPath = await realpath(absolutePath);
+      const postRel = relative(rootReal, postResolvedPath);
+      if (escapesRoot(postRel)) {
+        throw new HarnessError('E_PATH_OUT_OF_ROOT', 'Path escaped approved root during read.', { absolutePath });
+      }
+      const currentPathStat = await lstat(postResolvedPath);
+      if (handleStat.dev !== currentPathStat.dev || handleStat.ino !== currentPathStat.ino) {
+        throw new HarnessError('E_PATH_RACE_DETECTED', 'File changed during path validation/read boundary.', { absolutePath });
+      }
+
+      const retain = Math.min(handleStat.size, maxBytes);
       const buffer = Buffer.alloc(retain);
       const { bytesRead } = await file.read(buffer, 0, retain, 0);
       const body = buffer.subarray(0, bytesRead);
@@ -44,8 +56,8 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
       return {
         content: body.toString('utf8'),
         retainedBytes: bytesRead,
-        originalBytes: stat.size,
-        truncated: stat.size > bytesRead
+        originalBytes: handleStat.size,
+        truncated: handleStat.size > bytesRead
       };
     } finally {
       await file.close();
@@ -117,8 +129,8 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
     if (signal?.aborted) {
       throw new HarnessError('E_ABORTED', 'Read cancelled before start.');
     }
-    await assertPathContained(absolutePath);
-    const result = await readBoundedText(absolutePath, maxBytes ?? limits.maxFileBytes);
+    const containment = await assertPathContained(absolutePath);
+    const result = await readBoundedText(absolutePath, maxBytes ?? limits.maxFileBytes, containment.rootReal);
     const redacted = redactor.redact(result.content);
     return {
       relativePath,

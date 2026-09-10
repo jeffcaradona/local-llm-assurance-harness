@@ -16,40 +16,44 @@ test('provider rejects oversized response body', async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('x'.repeat(1024));
   });
-  const port = server.address().port;
-
-  const provider = createOpenAICompatibleProvider({
-    baseUrl: `http://127.0.0.1:${port}/v1`,
-    model: 'm',
-    maxPromptChars: 1000,
-    timeoutMs: 1000,
-    maxResponseBytes: 100
-  });
-
-  await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), { code: 'E_MODEL_RESPONSE_TOO_LARGE' });
-  await new Promise((resolve) => server.close(resolve));
+  try {
+    const port = server.address().port;
+    const provider = createOpenAICompatibleProvider({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      model: 'm',
+      maxPromptChars: 1000,
+      timeoutMs: 1000,
+      maxResponseBytes: 100
+    });
+    await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), { code: 'E_MODEL_RESPONSE_TOO_LARGE' });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test('provider parses OpenAI-compatible JSON content', async () => {
   let seenPath = '';
-  const server = await withServer((_, res) => {
-    seenPath = _.url;
+  const server = await withServer((req, res) => {
+    seenPath = req.url;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({ choices: [{ message: { content: JSON.stringify({ schemaVersion: '1.0.0', summary: 'ok', decision: 'no_findings_in_supplied_evidence', observations: [], inferences: [], findings: [], limitations: { notes: [], omittedEvidenceIds: [] } }) } }] })
     );
   });
-  const port = server.address().port;
-  const provider = createOpenAICompatibleProvider({
-    baseUrl: `http://127.0.0.1:${port}/v1`,
-    model: 'm',
-    maxPromptChars: 1000,
-    timeoutMs: 1000,
-    maxResponseBytes: 10_000
-  });
+  try {
+    const port = server.address().port;
+    const provider = createOpenAICompatibleProvider({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      model: 'm',
+      maxPromptChars: 1000,
+      timeoutMs: 1000,
+      maxResponseBytes: 10_000
+    });
 
-  const out = await provider.complete({ systemPrompt: 's', userPrompt: 'u' });
-  assert.equal(out.summary, 'ok');
-  assert.equal(seenPath, '/v1/chat/completions');
-  await new Promise((resolve) => server.close(resolve));
+    const out = await provider.complete({ systemPrompt: 's', userPrompt: 'u' });
+    assert.equal(out.summary, 'ok');
+    assert.equal(seenPath, '/v1/chat/completions');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

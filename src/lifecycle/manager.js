@@ -1,3 +1,5 @@
+import { HarnessError } from '../errors.js';
+
 export function createLifecycleManager({ admission, shutdownGraceMs, shutdownDeadlineMs }) {
   let shuttingDown = false;
   const activeControllers = new Set();
@@ -5,7 +7,7 @@ export function createLifecycleManager({ admission, shutdownGraceMs, shutdownDea
   return {
     createRequestScope() {
       if (shuttingDown) {
-        throw new Error('Harness is shutting down.');
+        throw new HarnessError('E_SHUTDOWN_REJECTED', 'Harness is shutting down.');
       }
       const controller = new AbortController();
       activeControllers.add(controller);

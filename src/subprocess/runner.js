@@ -32,7 +32,7 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
         const child = spawn(command, args, {
           cwd,
           shell: false,
-          env,
+          env: { ...process.env, ...env },
           stdio: ['ignore', 'pipe', 'pipe']
         });
 
