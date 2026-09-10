@@ -125,15 +125,17 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
     return matches.sort((a, b) => `${a.relativePath}:${a.lineStart}`.localeCompare(`${b.relativePath}:${b.lineStart}`));
   }
 
-  async function readTextFile({ absolutePath, relativePath, signal, maxBytes }) {
+  async function readTextFile({ path, signal, maxBytes }) {
     if (signal?.aborted) {
       throw new HarnessError('E_ABORTED', 'Read cancelled before start.');
     }
+    const rootReal = await canonicalRootPromise;
+    const absolutePath = resolve(rootReal, path);
     const containment = await assertPathContained(absolutePath);
     const result = await readBoundedText(absolutePath, maxBytes ?? limits.maxFileBytes, containment.rootReal);
     const redacted = redactor.redact(result.content);
     return {
-      relativePath,
+      relativePath: path,
       lineStart: 1,
       lineEnd: redacted.split(/\r?\n/).length,
       content: redacted,

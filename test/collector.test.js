@@ -39,7 +39,7 @@ test('already aborted read is rejected', async () => {
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(
-    () => collector.readTextFile({ absolutePath: file, relativePath: 'a.txt', signal: controller.signal, maxBytes: 10 }),
+    () => collector.readTextFile({ path: 'a.txt', signal: controller.signal, maxBytes: 10 }),
     { code: 'E_ABORTED' }
   );
 });
@@ -55,7 +55,7 @@ test('symlink that escapes root is rejected', { skip: process.platform === 'win3
 
   const collector = createFilesystemCollector({ rootPath: root, runner: { run: async () => ({ exitCode: 0, stdout: '', stderr: '' }) }, limits, redactor: createRedactor() });
   await assert.rejects(
-    () => collector.readTextFile({ absolutePath: linkPath, relativePath: 'dir/link.txt', maxBytes: 10 }),
+    () => collector.readTextFile({ path: 'dir/link.txt', maxBytes: 10 }),
     { code: 'E_PATH_OUT_OF_ROOT' }
   );
 });

@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { createHarness } from './harness.js';
 import { HarnessError } from './errors.js';
+import { createReplayOrchestrator } from './orchestrator/replay.js';
 
 function parseArgs(argv) {
   const [command = '--help', ...rest] = argv;
@@ -36,8 +37,8 @@ export async function runCli({ argv = process.argv.slice(2), env = process.env, 
 
   if (command === 'replay') {
     if (!options.bundle) throw new HarnessError('E_REPLAY_BUNDLE_REQUIRED', 'Replay requires --bundle.');
-    const harness = createHarness({ env, rootPath: process.cwd() });
-    const report = await harness.replay({ bundlePath: resolve(String(options.bundle)), format: options.format === 'json' ? 'json' : 'terminal' });
+    const replay = createReplayOrchestrator();
+    const report = await replay.replay({ bundlePath: resolve(String(options.bundle)), format: options.format === 'json' ? 'json' : 'terminal' });
     stdout.write(`${report}\n`);
     return 0;
   }

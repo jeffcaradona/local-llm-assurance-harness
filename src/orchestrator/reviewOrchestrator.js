@@ -11,14 +11,14 @@ function makeEvidenceId(index) {
   return `ev-${String(index + 1).padStart(4, '0')}`;
 }
 
-function withEvidenceMeta(record, capability, index) {
+function withEvidenceMeta(record, capability, index, collectedAt) {
   return {
     id: makeEvidenceId(index),
     capability,
     sourcePath: record.relativePath,
     lineRange: record.lineStart ? [record.lineStart, record.lineEnd] : null,
     content: record.content,
-    collectedAt: new Date().toISOString(),
+    collectedAt,
     retainedBytes: record.retainedBytes,
     originalBytes: record.originalBytes,
     truncated: record.truncated,
@@ -40,6 +40,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
       try {
         const reviewRoot = resolve(rootPath);
         const activeSignal = AbortSignal.any([signal, scope.signal].filter(Boolean));
+        const collectedAt = new Date().toISOString();
         const findFiles = capabilities.get('filesystem.findFiles');
         const readTextFile = capabilities.get('filesystem.readTextFile');
         const searchText = capabilities.get('filesystem.searchText');
@@ -53,7 +54,8 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         for (const file of fileList) {
           if (totalBytes >= config.limits.maxEvidenceBytes) break;
           const record = await readTextFile.invoke({ path: file, signal: activeSignal, maxBytes: config.limits.maxFileBytes });
-          const item = withEvidenceMeta(record, 'filesystem.readTextFile', evidence.length);
+          const item = withEvidenceMeta(record, 'filesystem.readTextFile', evidence.length, collectedAt);
+          if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes) break;
           evidence.push(item);
           totalBytes += item.retainedBytes;
         }
@@ -62,7 +64,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
           if (totalBytes >= config.limits.maxEvidenceBytes) break;
           const records = await searchText.invoke({ pattern, signal: activeSignal, maxMatches: config.limits.maxSearchMatches });
           for (const record of records) {
-            const item = withEvidenceMeta(record, 'filesystem.searchText', evidence.length);
+            const item = withEvidenceMeta(record, 'filesystem.searchText', evidence.length, collectedAt);
             if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes) break;
             evidence.push(item);
             totalBytes += item.retainedBytes;

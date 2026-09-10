@@ -27,6 +27,12 @@ export async function compilePromptContext({ request, evidence, instructionFiles
       `Review request: ${request}`,
       'Supplied evidence:'
     ].join('\n\n').length;
+  if (scaffoldChars > maxChars) {
+    throw new HarnessError('E_PROMPT_BUDGET_EXCEEDED', 'Trusted instructions and request exceed prompt budget.', {
+      maxChars,
+      usedChars: scaffoldChars
+    });
+  }
   let usedChars = scaffoldChars;
 
   for (const item of [...evidence].sort((a, b) => a.id.localeCompare(b.id))) {

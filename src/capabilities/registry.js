@@ -58,7 +58,7 @@ export function createCapabilityRegistry({ rootPath, collector }) {
         if (isLikelySensitivePath(path)) {
           throw new HarnessError('E_SENSITIVE_PATH_BLOCKED', 'Sensitive file path blocked by policy.', { path });
         }
-        return collector.readTextFile({ absolutePath, relativePath: path, signal, maxBytes });
+        return collector.readTextFile({ path, signal, maxBytes, absolutePath });
       }
     },
     'filesystem.searchText': {
