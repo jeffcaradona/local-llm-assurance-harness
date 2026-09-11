@@ -37,6 +37,7 @@ Use environment variables (see `.env.example`):
 - `HARNESS_ALLOW_NON_LOCAL_ENDPOINT` (`true` required for non-local hosts)
 - `HARNESS_OUTPUT_DIR` (must resolve outside reviewed root)
 - `HARNESS_MODEL_MAX_TOKENS` (optional)
+- `HARNESS_MODEL_TIMEOUT_MS` (default `180000`, or 3 minutes; covers cold model loading and response generation; increase for slower models)
 - `HARNESS_REDACT_SECRET_1`, `HARNESS_REDACT_SECRET_2` (optional explicit redactions)
 
 ## Commands

@@ -7,11 +7,11 @@
     "local-llm-assurance-harness": "./src/index.js"
   },
   "scripts": {
-    "start": "node ./src/index.js",
+    "start": "node  --env-file=.env  ./src/index.js",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=22.0.0 <25"
+    "node": ">=22.0.0 <=26"
   },
   "keywords": [
     "llm",
