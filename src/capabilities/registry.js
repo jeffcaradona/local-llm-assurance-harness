@@ -1,4 +1,4 @@
-import { relative, resolve } from 'node:path';
+import { basename, relative, resolve } from 'node:path';
 import { HarnessError } from '../errors.js';
 
 const SENSITIVE_FILE_PATTERNS = [
@@ -14,6 +14,10 @@ const SENSITIVE_FILE_PATTERNS = [
 
 export function isLikelySensitivePath(pathText) {
   const lower = pathText.toLowerCase();
+  const name = basename(lower);
+  if (name === '.env.example') {
+    return false;
+  }
   return SENSITIVE_FILE_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 

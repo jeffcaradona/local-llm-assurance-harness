@@ -66,20 +66,25 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
 
   async function runFd({ signal, limit }) {
     const rootReal = await canonicalRootPromise;
-    const result = await runner.run('fd', ['--type', 'f', '--hidden', '--color', 'never', '.', rootReal], {
+    const result = await runner.run(
+      'fd',
+      ['--type', 'f', '--hidden', '--color', 'never', '--exclude', '.git', '--exclude', 'node_modules', '.'],
+      {
       cwd: rootReal,
       signal,
       timeoutMs: limits.subprocessTimeoutMs,
       stdoutMaxBytes: limits.subprocessStdoutBytes,
       stderrMaxBytes: limits.subprocessStderrBytes,
       env: {}
-    });
+      }
+    );
     if (result.exitCode !== 0) {
       throw new HarnessError('E_FIND_FAILED', 'File discovery failed.', { stderr: result.stderr, exitCode: result.exitCode });
     }
     return result.stdout
       .split(/\r?\n/)
       .filter(Boolean)
+      .map((item) => relative(rootReal, resolve(rootReal, item)))
       .sort()
       .slice(0, limit ?? limits.maxFiles);
   }

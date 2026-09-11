@@ -26,6 +26,12 @@ function withEvidenceMeta(record, capability, index, collectedAt) {
   };
 }
 
+const AUTO_DISCOVERY_SKIPPABLE_CODES = new Set([
+  'E_SENSITIVE_PATH_BLOCKED',
+  'E_BINARY_FILE_REJECTED',
+  'E_SYMLINK_BLOCKED'
+]);
+
 export function createReviewOrchestrator({ config, capabilities, provider, admission, lifecycle }) {
   return {
     async review({ rootPath, selectedFiles = [], searches = [], request, format = 'terminal', instructionFiles = [], includeReplay = false, signal }) {
@@ -48,6 +54,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         const searchText = capabilities.get('filesystem.searchText');
         const evidence = [];
         let totalBytes = 0;
+        const explicitFileSelection = selectedFiles.length > 0;
 
         const fileList = selectedFiles.length
           ? [...new Set(selectedFiles)].sort()
@@ -55,7 +62,15 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
 
         for (const file of fileList) {
           if (totalBytes >= config.limits.maxEvidenceBytes) break;
-          const record = await readTextFile.invoke({ path: file, signal: activeSignal, maxBytes: config.limits.maxFileBytes });
+          let record;
+          try {
+            record = await readTextFile.invoke({ path: file, signal: activeSignal, maxBytes: config.limits.maxFileBytes });
+          } catch (error) {
+            if (!explicitFileSelection && AUTO_DISCOVERY_SKIPPABLE_CODES.has(error?.code)) {
+              continue;
+            }
+            throw error;
+          }
           const item = withEvidenceMeta(record, 'filesystem.readTextFile', evidence.length, collectedAt);
           if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes) break;
           evidence.push(item);

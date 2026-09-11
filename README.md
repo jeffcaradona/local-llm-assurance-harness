@@ -53,7 +53,7 @@ npm test
 
 When no `--file` is provided:
 
-1. Run `fd --type f --hidden --color never . <root>`.
+1. Run `fd --type f --hidden --color never --exclude .git --exclude node_modules .` from the reviewed root.
 2. Sort results deterministically.
 3. Read bounded text files with Node fs APIs.
 4. Apply redaction before model submission.
@@ -66,10 +66,11 @@ Policy and limits:
 
 - No shell invocation (`spawn(..., shell: false)`).
 - Option injection blocked for paths/patterns starting with `-`.
-- Sensitive paths blocked by default (`.env`, keys, kube config, credentials markers).
+- Sensitive paths blocked by default (`.env`, keys, kube config, credentials markers); `.env.example` is allowed as a non-secret template.
 - Bounded files, matches, bytes per file, aggregate evidence bytes, stdout/stderr bytes, and model response bytes.
 - Search exit code `1` (no match) is accepted as empty evidence.
 - Symlink containment checks rely on canonical path checks and are not a full OS sandbox against concurrent hostile mutation.
+- During automatic file discovery, blocked/unsupported files are skipped; explicitly requested files still fail fast on policy violations.
 
 ## Output and replay
 

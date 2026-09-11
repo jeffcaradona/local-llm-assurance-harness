@@ -59,3 +59,23 @@ test('symlink that escapes root is rejected', { skip: process.platform === 'win3
     { code: 'E_PATH_OUT_OF_ROOT' }
   );
 });
+
+test('fd discovery excludes internal directories and normalizes relative paths', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'collector-'));
+  const seen = { args: [] };
+  const runner = {
+    run: async (_cmd, args) => {
+      seen.args = args;
+      return {
+        exitCode: 0,
+        stdout: `${join(root, 'README.md')}\n${join(root, '.github', 'workflows', 'ci.yml')}\n`,
+        stderr: ''
+      };
+    }
+  };
+  const collector = createFilesystemCollector({ rootPath: root, runner, limits, redactor: createRedactor() });
+  const files = await collector.findFiles({});
+  assert.match(seen.args.join(' '), /--exclude \.git/);
+  assert.match(seen.args.join(' '), /--exclude node_modules/);
+  assert.deepEqual(files, ['.github/workflows/ci.yml', 'README.md']);
+});
