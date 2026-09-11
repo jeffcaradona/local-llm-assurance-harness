@@ -49,7 +49,7 @@ test('review orchestration persists sanitized manifest and replay', async () => 
   const provider = { complete: async () => reviewPayload };
 
   const orchestrator = createReviewOrchestrator({
-    config: { model: { maxPromptChars: 2000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
+    config: { model: { maxPromptChars: 10_000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
     capabilities,
     provider,
     admission,
@@ -137,7 +137,7 @@ test('auto discovery skips blocked files but explicit file selection fails', asy
   };
 
   const orchestrator = createReviewOrchestrator({
-    config: { model: { maxPromptChars: 2000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
+    config: { model: { maxPromptChars: 10_000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
     capabilities,
     provider: { complete: async () => reviewPayload },
     admission,

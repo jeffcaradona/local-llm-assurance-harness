@@ -83,6 +83,8 @@ Policy and limits:
 
 Errors are emitted as structured JSON to stderr with stable `code` values (for example `E_CONFIG_INVALID`, `E_EXECUTABLE_NOT_FOUND`, `E_REVIEW_SCHEMA_INVALID`).
 
+For `E_REVIEW_SCHEMA_INVALID`, see the [developer walkthrough](docs/review-schema-walkthrough.md) covering the request flow, the missing-schema root cause, and why valid JSON can still fail review validation.
+
 ## Limitations (milestone one)
 
 - No Git diff review.
