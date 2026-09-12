@@ -2,8 +2,9 @@
   Provenance: Drafted by Claude (Anthropic) from a working conversation with
   Jeff, September 2026. Agent-generated scaffolding — edit freely.
 
-  Suggested location (GitHub repo): pull_request_template.md at repo root,
-  or .github/pull_request_template.md if you'd rather keep root clean.
+  Location: docs/pull_request_template.md — recognized by GitHub as a default
+  template location, and keeps working unchanged if this repo is ever hosted
+  elsewhere that also honors docs/.
 -->
 
 ## Summary
@@ -18,7 +19,7 @@
 - [ ] Phase plan
 - [ ] Actuals doc
 - [ ] Complexity report
-- [ ] Phase summary (`lib/documents`)
+- [ ] Phase summary (`docs/artifacts`)
 - [ ] Code review / security review pass recorded
 - [ ] N/A — this PR doesn't close a phase
 
