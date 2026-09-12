@@ -62,6 +62,9 @@ test('symlink that escapes root is rejected', { skip: process.platform === 'win3
 
 test('fd discovery excludes internal directories and normalizes relative paths', async () => {
   const root = await mkdtemp(join(tmpdir(), 'collector-'));
+  await mkdir(join(root, '.github', 'workflows'), { recursive: true });
+  await writeFile(join(root, 'README.md'), '# test');
+  await writeFile(join(root, '.github', 'workflows', 'ci.yml'), 'name: test');
   const seen = { args: [] };
   const runner = {
     run: async (_cmd, args) => {

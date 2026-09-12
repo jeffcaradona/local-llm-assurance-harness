@@ -81,10 +81,14 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
     if (result.exitCode !== 0) {
       throw new HarnessError('E_FIND_FAILED', 'File discovery failed.', { stderr: result.stderr, exitCode: result.exitCode });
     }
-    return result.stdout
+    const files = await Promise.all(result.stdout
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((item) => relative(rootReal, resolve(rootReal, item)))
+      .map(async (item) => {
+        const abs = await realpath(resolve(rootReal, item));
+        return relative(rootReal, abs).replaceAll('\\', '/');
+      }));
+    return files
       .sort()
       .slice(0, limit ?? limits.maxFiles);
   }
