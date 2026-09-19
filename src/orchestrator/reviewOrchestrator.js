@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import { HarnessError, asHarnessError } from '../errors.js';
 import { compilePromptContext } from '../context/compiler.js';
 import {
@@ -11,6 +12,7 @@ import { persistRunArtifacts } from '../audit/manifest.js';
 import { REVIEW_SCHEMA_VERSION } from '../review/schema.js';
 import { createRedactor } from '../redaction.js';
 import { runInvestigation } from './investigationLoop.js';
+import { withCancellation as cancellable } from '../lifecycle/cancellation.js';
 
 function makeEvidenceId(index) {
   return `ev-${String(index + 1).padStart(4, '0')}`;
@@ -54,6 +56,7 @@ export function createReviewOrchestrator({
   admission,
   lifecycle,
   redactor = createRedactor(),
+  persistArtifacts = persistRunArtifacts,
 }) {
   return {
     async review({
@@ -114,6 +117,21 @@ export function createReviewOrchestrator({
         let review;
         let investigationReplayBundle;
         if (investigate) {
+          stage = 'root';
+          checkInvestigationAbort(activeSignal);
+          let validRoot = false;
+          try {
+            validRoot = (await stat(reviewRoot)).isDirectory();
+          } catch {
+            // Filesystem errors may disclose the private repository path.
+          }
+          checkInvestigationAbort(activeSignal);
+          if (!validRoot) {
+            throw new HarnessError(
+              'E_REVIEW_ROOT_INVALID',
+              'Investigation root must be an accessible existing directory.'
+            );
+          }
           stage = 'instructions';
           ({
             evidence,
@@ -287,13 +305,18 @@ export function createReviewOrchestrator({
 
         if (investigate) checkInvestigationAbort(activeSignal);
         stage = 'artifacts';
-        const paths = await persistRunArtifacts({
-          outputDir: config.review.outputDir,
-          reviewedRoot: reviewRoot,
-          runId,
-          manifest,
-          replayBundle,
-        });
+        const paths = await cancellable(
+          () =>
+            persistArtifacts({
+              outputDir: config.review.outputDir,
+              reviewedRoot: reviewRoot,
+              runId,
+              manifest,
+              replayBundle,
+              signal: activeSignal,
+            }),
+          activeSignal
+        );
 
         return {
           runId,

@@ -249,7 +249,15 @@ function validateInvestigationBundle(bundle) {
       for (const value of Object.values(event.bounds)) integer(value);
       object(
         event.outcome,
-        ['status', 'records', 'paths', 'recordCount', 'pathCount', 'truncated'],
+        [
+          'status',
+          'records',
+          'paths',
+          'recordCount',
+          'consideredRecords',
+          'pathCount',
+          'truncated',
+        ],
         ['error']
       );
       invalid(['success', 'error'].includes(event.outcome.status));
@@ -258,6 +266,18 @@ function validateInvestigationBundle(bundle) {
           Array.isArray(event.outcome.records)
       );
       integer(event.outcome.recordCount, event.outcome.records.length);
+      const maximumConsidered =
+        event.outcome.status === 'error' ||
+        event.tool === 'filesystem.findFiles'
+          ? 0
+          : event.tool === 'filesystem.readTextFile'
+            ? 1
+            : event.bounds.maxMatches;
+      integer(
+        event.outcome.consideredRecords,
+        event.outcome.records.length,
+        Math.min(event.outcome.recordCount, maximumConsidered)
+      );
       strings(event.outcome.paths);
       integer(event.outcome.pathCount, event.outcome.paths.length);
       if (event.outcome.status === 'error') {

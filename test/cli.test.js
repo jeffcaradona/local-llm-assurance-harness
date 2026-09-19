@@ -240,6 +240,47 @@ test('investigation instruction failures expose safe metadata without paths', as
   );
 });
 
+test('seedless investigation rejects invalid roots before contacting the model', async (t) => {
+  const dir = await fixture(t);
+  const filePath = join(dir, 'private-file');
+  await writeFile(filePath, 'not a directory');
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => {
+    assert.fail('Invalid root must not reach the model endpoint.');
+  });
+  for (const root of [join(dir, 'private-missing-directory'), filePath]) {
+    await assert.rejects(
+      () =>
+        runCli({
+          argv: [
+            'review',
+            '--root',
+            root,
+            '--request',
+            'Review repository',
+            '--investigate',
+          ],
+          env: {},
+        }),
+      (error) => {
+        assert.equal(error.code, 'E_REVIEW_ROOT_INVALID');
+        assert.equal(error.details.stage, 'root');
+        assert.equal(error.details.investigation.modelCalls, 0);
+        assert.equal(error.details.investigation.toolCalls, 0);
+        assert.equal(
+          error.details.investigation.stopReason,
+          'E_REVIEW_ROOT_INVALID'
+        );
+        assert.doesNotMatch(
+          JSON.stringify({ message: error.message, details: error.details }),
+          /private-file|private-missing-directory|\.cli-test-/
+        );
+        return true;
+      }
+    );
+  }
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
 test('replay command requires bundle path', async () => {
   await assert.rejects(() => runCli({ argv: ['replay'] }), {
     code: 'E_REPLAY_BUNDLE_REQUIRED',

@@ -45,7 +45,7 @@ Use environment variables (see `.env.example`):
 - `HARNESS_INVESTIGATE_TIMEOUT_MS` (default `600000`, or 10 minutes; integer `1..2147483647`, overall investigation deadline after admission)
 - `HARNESS_REDACT_SECRET_1`, `HARNESS_REDACT_SECRET_2` (optional explicit redactions)
 
-Investigation settings do not enable investigation: pass `--investigate` explicitly. Blank investigation settings use their defaults. The per-model-request timeout remains independent of the overall investigation deadline.
+Investigation settings do not enable investigation: pass `--investigate` explicitly. Blank investigation settings use their defaults. The per-model-request timeout remains independent of the overall investigation deadline, which includes artifact persistence.
 
 ### Context length and response tokens
 
@@ -102,7 +102,7 @@ Only these three read-only tools are approved. No shell, mutations, infrastructu
 
 The last allowed model call is reserved for finalization. Reaching the tool-call cap, read/search collection limits, or evidence/navigation/context budget switches to a final-only turn; requesting another tool then fails rather than running it. Exhausting discovery paths alone does not prevent reading discovered files. A deadline, cancellation, or invalid final response fails the run; a final review is not guaranteed.
 
-Contexts retain cumulative original redacted excerpts, not model-written replacements. Admitted evidence is never evicted to make room for later evidence. Identical records (capability, path, line range, retained content, and truncation state) reuse IDs; changed records receive new IDs. This is not an atomic repository snapshot. An excerpt may be truncated to remaining evidence bytes; records that cannot fit the context are marked omitted and cannot substantiate findings. Results skipped after gathering stops are represented by omission counts, not invented evidence.
+Contexts retain cumulative original redacted excerpts, not model-written replacements. Admitted evidence is never evicted to make room for later evidence. Identical records (capability, path, line range, retained content, original byte count, and truncation state) reuse IDs; changed records receive new IDs. This is not an atomic repository snapshot. An excerpt may be truncated to remaining evidence bytes; records that cannot fit the context are marked omitted and cannot substantiate findings. Results skipped after gathering stops are represented by omission counts, not invented evidence.
 
 Replay the bundle path printed on stderr, replacing `RUN_ID` below:
 
@@ -138,16 +138,17 @@ Policy and limits:
 - Sensitive paths blocked by default (`.env`, keys, kube config, credentials markers); `.env.example` is allowed as a non-secret template.
 - Bounded files, matches, bytes per file, aggregate evidence bytes, stdout/stderr bytes, and model response bytes.
 - Search exit code `1` (no match) is accepted as empty evidence.
-- Symlink containment checks rely on canonical path checks and are not a full OS sandbox against concurrent hostile mutation.
+- A symlink used as the selected root is resolved canonically; symlinks beneath that root are blocked. Containment checks are not a full OS sandbox against concurrent hostile mutation.
 - During automatic file discovery, blocked/unsupported files are skipped; explicitly requested files still fail fast on policy violations.
 
 ## Output and replay
 
-- Manifest: metadata-only sanitized artifact (`<run-id>.manifest.json`), written only for successful runs. Failed runs report their error on stderr and leave no manifest.
+- Manifest: metadata-only sanitized artifact (`<run-id>.manifest.json`), published last as the success marker. Failures report errors on stderr, not a successful report.
 - Investigation manifests add safe counts, turn/status metadata, stop reasons, and evidence inclusion/omission IDs, not prompts, tool arguments, or source excerpts. Investigation failures report safe stage/count metadata on stderr when available, not a success artifact.
 - Replay bundle: optional (`--replay`) redacted evidence and inputs for offline verification. Investigation bundles are separately versioned and preserve sanitized actions and outcomes needed to verify the recorded execution. Replay does not rerun model inference or filesystem tools, reproduce model nondeterminism, establish authenticity, or prove findings correct. Legacy single-pass replay remains unchanged.
 - Redaction does not declassify source code: replay bundles can still contain confidential excerpts, requests, and instructions. Protect them accordingly.
 - Artifacts are written to an explicit output directory outside the reviewed repository root.
+- Persistence stages files inside that output directory, publishes optional replay before the manifest, and preserves existing files on name collisions. Abort/failure triggers best-effort cleanup of this run's staging and newly published artifacts. Cleanup can finish after in-flight filesystem IO settles; crashes or cleanup failures can leave residual files.
 
 ## Exit/error behavior
 

@@ -255,6 +255,39 @@ test('replay reproduces context omissions', async (t) => {
   );
 });
 
+test('replay preserves search accounting when a context omission prunes remaining matches', async (t) => {
+  const { replayBundle } = await recordedRun({
+    selectedFiles: [],
+    searches: ['needle'],
+    config: {
+      ...config,
+      limits: {
+        ...config.limits,
+        maxSearchMatches: 2,
+        maxFileBytes: 120_000,
+        maxEvidenceBytes: 300_000,
+      },
+    },
+    async exchange(invocation) {
+      return invocation.kind === 'model'
+        ? { action: 'final', review: review() }
+        : {
+            status: 'success',
+            records: [
+              { relativePath: 'a.js', content: 'x'.repeat(100_000) },
+              { relativePath: 'b.js', content: 'x'.repeat(100_000) },
+            ],
+          };
+    },
+  });
+  assert.equal(replayBundle.events[0].outcome.recordCount, 2);
+  assert.equal(replayBundle.events[0].outcome.records.length, 1);
+  assert.match(
+    await replay(t, replayBundle),
+    /Offline dependency investigation/
+  );
+});
+
 test('replay preserves long recorded source paths without truncating their identity', async (t) => {
   const relativePath = `${'nested/'.repeat(160)}source.js`;
   const { replayBundle } = await recordedRun({
@@ -420,6 +453,81 @@ test('replay validates strict configuration, seeds, timestamps and timing', asyn
       'instruction file injection',
       (b) => {
         b.instructionFiles = ['/nonexistent'];
+      },
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (t) => {
+      const bundle = JSON.parse(JSON.stringify(replayBundle));
+      mutate(bundle);
+      await assert.rejects(replay(t, resign(bundle)), {
+        code: 'E_REPLAY_INVALID',
+      });
+    });
+  }
+});
+
+test('replay rejects invalid considered record accounting', async (t) => {
+  const { replayBundle } = await recordedRun();
+  const cases = [
+    [
+      'missing count',
+      (b) => {
+        delete b.events[0].outcome.consideredRecords;
+      },
+    ],
+    [
+      'noninteger count',
+      (b) => {
+        b.events[0].outcome.consideredRecords = 0.5;
+      },
+    ],
+    [
+      'below retained count',
+      (b) => {
+        b.events[0].outcome.consideredRecords = 0;
+      },
+    ],
+    [
+      'above returned count',
+      (b) => {
+        b.events[0].outcome.consideredRecords = 2;
+      },
+    ],
+    [
+      'read bound',
+      (b) => {
+        b.events[0].outcome.recordCount = 2;
+        b.events[0].outcome.consideredRecords = 2;
+      },
+    ],
+    [
+      'discovery count',
+      (b) => {
+        b.events[2].outcome.recordCount = 1;
+        b.events[2].outcome.consideredRecords = 1;
+      },
+    ],
+    [
+      'error count',
+      (b) => {
+        Object.assign(b.events[0].outcome, {
+          status: 'error',
+          records: [],
+          consideredRecords: 1,
+          error: { code: 'E_FILE_NOT_FOUND', message: 'Unavailable' },
+        });
+      },
+    ],
+    [
+      'search bound',
+      (b) => {
+        Object.assign(b.events[0], {
+          tool: 'filesystem.searchText',
+          arguments: { pattern: 'needle' },
+        });
+        b.events[0].outcome.recordCount = 11;
+        b.events[0].outcome.consideredRecords = 11;
       },
     ],
   ];

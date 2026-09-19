@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { HarnessError } from '../errors.js';
 import { createRedactor } from '../redaction.js';
 import { compilePromptContext } from '../context/compiler.js';
+import {
+  throwIfAborted as checkAbort,
+  withCancellation as cancellable,
+} from '../lifecycle/cancellation.js';
 import { compileInvestigationContext } from './investigationContext.js';
 import {
   INVESTIGATION_PROTOCOL_VERSION,
@@ -39,46 +43,6 @@ export function sanitizeInvestigationValue(value, redactor) {
     );
   }
   return value;
-}
-
-function checkAbort(signal) {
-  if (!signal?.aborted) return;
-  throw signal.reason?.code === 'E_INVESTIGATION_TIMEOUT'
-    ? new HarnessError(
-        'E_INVESTIGATION_TIMEOUT',
-        'Investigation deadline expired.'
-      )
-    : new HarnessError('E_ABORTED', 'Investigation cancelled.');
-}
-
-// The boundary settles on cancellation even when an injected adapter is uncooperative.
-// Adapters still own closing their actual resources when the signal is aborted.
-async function cancellable(operation, signal) {
-  checkAbort(signal);
-  let onAbort;
-  const aborted = new Promise((_, reject) => {
-    onAbort = () => {
-      try {
-        checkAbort(signal);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-  try {
-    const value = await Promise.race([
-      Promise.resolve().then(() => {
-        checkAbort(signal);
-        return operation();
-      }),
-      aborted,
-    ]);
-    checkAbort(signal);
-    return value;
-  } finally {
-    signal?.removeEventListener('abort', onAbort);
-  }
 }
 
 function boundText(text, maxBytes) {
@@ -311,6 +275,7 @@ export async function executeInvestigation({
     };
     let records = [];
     let paths = [];
+    let consideredRecords = 0;
     if (raw.status === 'error') {
       if (!SAFE_TOOL_ERRORS.has(raw.error?.code))
         throw new HarnessError('E_INTERNAL', 'Unexpected capability failure.');
@@ -356,16 +321,21 @@ export async function executeInvestigation({
         const candidates = raw.records
           .slice(0, tool === 'filesystem.readTextFile' ? 1 : availableMatches)
           .map((record) => normalizeRecord(record, limits, redactor))
-          .sort((a, b) =>
-            JSON.stringify([
+          .sort((a, b) => {
+            const left = JSON.stringify([
               a.relativePath,
               a.lineStart,
               a.content,
-            ]).localeCompare(
-              JSON.stringify([b.relativePath, b.lineStart, b.content])
-            )
-          );
-        if (tool === 'filesystem.searchText') matchCount += candidates.length;
+            ]);
+            const right = JSON.stringify([
+              b.relativePath,
+              b.lineStart,
+              b.content,
+            ]);
+            return left < right ? -1 : left > right ? 1 : 0;
+          });
+        consideredRecords = raw.consideredRecords ?? candidates.length;
+        if (tool === 'filesystem.searchText') matchCount += consideredRecords;
         for (const candidate of candidates) {
           const remaining = limits.maxEvidenceBytes - collectedBytes;
           if (remaining <= 0) {
@@ -398,7 +368,7 @@ export async function executeInvestigation({
           raw.truncated === true ||
           result.omittedRecords > 0 ||
           (tool === 'filesystem.searchText' &&
-            candidates.length >= availableMatches);
+            consideredRecords >= availableMatches);
       }
     } else throw new HarnessError('E_INTERNAL', 'Invalid tool outcome.');
     if (result.truncated && !limitations.includes('truncated_tool_result'))
@@ -411,6 +381,7 @@ export async function executeInvestigation({
         records,
         paths,
         recordCount: raw.recordCount ?? raw.records?.length ?? 0,
+        consideredRecords,
         pathCount: raw.pathCount ?? raw.paths?.length ?? 0,
         truncated: raw.truncated === true,
         ...(result.error ? { error: result.error } : {}),

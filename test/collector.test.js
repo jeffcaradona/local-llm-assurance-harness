@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createFilesystemCollector } from '../src/filesystem/collector.js';
 import { createRedactor } from '../src/redaction.js';
+import { createCapabilityRegistry } from '../src/capabilities/registry.js';
 
 const limits = {
   subprocessTimeoutMs: 1000,
@@ -449,4 +450,111 @@ test('discovery exposes count truncation separately from policy omissions', asyn
   assert.deepEqual(uncapped, ['a.txt', 'b.txt']);
   assert.equal(uncapped.truncated, false);
   assert.equal(uncapped.omittedCount, 1);
+});
+
+test('configured root aliases permit selections without permitting aliases below the root', async (t) => {
+  const base = await fixture(t);
+  const root = join(base, 'repo');
+  const outside = join(base, 'outside');
+  await mkdir(join(root, 'src'), { recursive: true });
+  await mkdir(join(root, '.kube'));
+  await mkdir(outside);
+  await writeFile(join(root, 'src', 'a.js'), 'evidence');
+  await writeFile(join(root, '.kube', 'config'), 'sensitive');
+  await writeFile(join(outside, 'a.js'), 'outside');
+  await symlink(join(root, 'src'), join(root, 'nested-alias'), 'junction');
+  await symlink(outside, join(root, 'escape'), 'junction');
+  const aliasTypes =
+    process.platform === 'win32' ? ['junction'] : ['junction', 'dir'];
+  for (const type of aliasTypes) {
+    const alias = join(base, `root-${type}`);
+    await symlink(root, alias, type);
+    let selected = 'src/a.js';
+    const collector = createFilesystemCollector({
+      rootPath: alias,
+      limits,
+      redactor: createRedactor(),
+      runner: {
+        run: async (command, _args, options) => {
+          assert.equal(options.cwd, root);
+          const paths = [
+            selected,
+            join(alias, 'nested-alias', 'a.js'),
+            join(alias, 'escape', 'a.js'),
+            join(alias, '.kube', 'config'),
+            join(outside, 'a.js'),
+          ];
+          return {
+            exitCode: 0,
+            stderr: '',
+            stdout:
+              command === 'fd'
+                ? paths.join('\n')
+                : paths
+                    .map((path) =>
+                      JSON.stringify({
+                        type: 'match',
+                        data: {
+                          path: { text: path },
+                          line_number: 1,
+                          lines: { text: 'evidence' },
+                        },
+                      })
+                    )
+                    .join('\n'),
+          };
+        },
+      },
+    });
+    const registry = createCapabilityRegistry({ rootPath: alias, collector });
+    for (const path of ['src/a.js', join(alias, 'src', 'a.js')]) {
+      const read = await registry
+        .get('filesystem.readTextFile')
+        .invoke({ path });
+      assert.equal(read.relativePath, 'src/a.js');
+      assert.equal(read.content, 'evidence');
+    }
+    for (const path of [
+      'src/a.js',
+      join(alias, 'src', 'a.js'),
+      join(root, 'src', 'a.js'),
+    ]) {
+      selected = path;
+      assert.deepEqual(await registry.get('filesystem.findFiles').invoke({}), [
+        'src/a.js',
+      ]);
+      const matches = await registry
+        .get('filesystem.searchText')
+        .invoke({ pattern: 'evidence' });
+      assert.equal(matches.length, 1);
+      assert.equal(matches[0].relativePath, 'src/a.js');
+    }
+    for (const path of [
+      'nested-alias/a.js',
+      join(alias, 'nested-alias', 'a.js'),
+    ]) {
+      await assert.rejects(
+        () => registry.get('filesystem.readTextFile').invoke({ path }),
+        { code: 'E_SYMLINK_BLOCKED' }
+      );
+    }
+    for (const path of [
+      'escape/a.js',
+      join(alias, 'escape', 'a.js'),
+      '../outside/a.js',
+      join(outside, 'a.js'),
+    ]) {
+      await assert.rejects(
+        () => registry.get('filesystem.readTextFile').invoke({ path }),
+        { code: 'E_PATH_OUT_OF_ROOT' }
+      );
+    }
+    await assert.rejects(
+      () =>
+        registry
+          .get('filesystem.readTextFile')
+          .invoke({ path: join(alias, '.kube', 'config') }),
+      { code: 'E_SENSITIVE_PATH_BLOCKED' }
+    );
+  }
 });

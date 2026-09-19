@@ -46,14 +46,31 @@ export function createFilesystemCollector({
   limits,
   redactor,
 }) {
+  const configuredRoot = resolve(rootPath);
   let canonicalRootPromise;
   const getCanonicalRoot = () =>
-    (canonicalRootPromise ??= realpath(resolve(rootPath)));
+    (canonicalRootPromise ??= realpath(configuredRoot));
 
   async function assertPathContained(pathText, signal) {
     checkAborted(signal);
     const rootReal = await getCanonicalRoot();
-    const absolutePath = resolveContainedPath(rootReal, pathText);
+    let absolutePath;
+    try {
+      const configuredPath = resolveContainedPath(configuredRoot, pathText);
+      absolutePath = resolve(
+        rootReal,
+        relative(configuredRoot, configuredPath)
+      );
+    } catch (error) {
+      if (
+        error.code !== 'E_PATH_OUT_OF_ROOT' ||
+        typeof pathText !== 'string' ||
+        !isAbsolute(pathText.replaceAll('\\', '/'))
+      )
+        throw error;
+      // Subprocesses run from the canonical root and may emit canonical paths.
+      absolutePath = resolveContainedPath(rootReal, pathText);
+    }
     const relativePath = relative(rootReal, absolutePath).replaceAll('\\', '/');
     if (
       isLikelySensitivePath(pathText) ||

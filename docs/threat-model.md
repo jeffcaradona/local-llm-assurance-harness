@@ -11,6 +11,7 @@
 
 - Named capability allowlist; no generic shell execution surface.
 - Root containment checks with canonical path resolution.
+- A symlink selected as the root is resolved canonically; symlink components beneath the root are blocked.
 - Denial of sensitive filename patterns by default.
 - Option injection prevention for user-controlled path/pattern values.
 - Subprocess execution with fixed executable names and argument arrays (`shell: false`).
@@ -33,6 +34,7 @@
 - Strict schemas and valid evidence IDs do not establish semantic truth, coverage, or resistance to every prompt-injection attempt. Policy enforcement belongs in code, not model instructions.
 - Model responses and tool selection can vary even with deterministic harness policy. Budget exhaustion can leave limited coverage, and deadlines or cancellation can prevent any valid final review.
 - Aborting a client HTTP request does not prove server-side inference stopped. Injected adapters must cooperate with cancellation to close their actual resources.
+- Artifact persistence is cancellation-aware and publishes the manifest last, but cleanup is best-effort and may await in-flight filesystem IO. Crashes or cleanup failures can leave staging or published files; publication is not a crash-atomic multi-file transaction.
 - Versioned investigation replay verifies recorded execution without live inference or tools; it neither reproduces model nondeterminism nor proves authenticity. An unkeyed digest cannot defend against an attacker rewriting a bundle consistently.
 
 ## Operational guidance

@@ -8,8 +8,15 @@ import { HarnessError } from '../src/errors.js';
 import { createRedactor } from '../src/redaction.js';
 import { createAdmissionController } from '../src/admission/controller.js';
 import { createLifecycleManager } from '../src/lifecycle/manager.js';
+import {
+  createCapabilityRegistry,
+  withCollectionMetadata,
+} from '../src/capabilities/registry.js';
 import { REVIEW_SCHEMA_VERSION } from '../src/review/schema.js';
-import { runInvestigation } from '../src/orchestrator/investigationLoop.js';
+import {
+  executeInvestigation,
+  runInvestigation,
+} from '../src/orchestrator/investigationLoop.js';
 import { compileInvestigationContext } from '../src/orchestrator/investigationContext.js';
 import { createReviewOrchestrator } from '../src/orchestrator/reviewOrchestrator.js';
 
@@ -862,3 +869,252 @@ test('model response byte limits apply before dispatching otherwise valid tool a
   );
   assert.deepEqual(io.calls, []);
 });
+
+test('live collector nonenumerable truncation metadata survives registry filtering and model handoff', async () => {
+  const paths = withCollectionMetadata(['a.js', '.env.local'], {
+    truncated: true,
+    omittedCount: 3,
+  });
+  const matches = withCollectionMetadata(
+    [record('a.js'), record('.env.local')],
+    { truncated: true, omittedCount: 4 }
+  );
+  assert.equal(Object.keys(paths).includes('truncated'), false);
+  assert.equal(Object.keys(matches).includes('omittedCount'), false);
+  const io = scripted([
+    tool('findFiles'),
+    tool('searchText', { pattern: 'value' }),
+    final(['ev-0001']),
+  ]);
+  io.capabilities = createCapabilityRegistry({
+    rootPath: resolve('.'),
+    collector: {
+      findFiles: async () => paths,
+      searchText: async () => matches,
+    },
+  });
+  const result = await run(io);
+  const navigation = body(io.prompts[2]).navigation;
+  assert.deepEqual(navigation[0].paths, ['a.js']);
+  assert.equal(navigation[0].truncated, true);
+  assert.equal(navigation[0].omittedPaths, 4);
+  assert.equal(navigation[1].truncated, true);
+  assert.equal(navigation[1].omittedRecords, 5);
+  const outcomes = result.replayBundle.events
+    .filter(({ kind }) => kind === 'tool')
+    .map(({ outcome }) => outcome);
+  assert.equal(outcomes[0].pathCount, 5);
+  assert.equal(outcomes[1].recordCount, 6);
+  assert.ok(outcomes.every(({ truncated }) => truncated));
+  assert.ok(result.investigation.limitations.includes('truncated_tool_result'));
+});
+
+test('missing executable is a safe tool outcome and allows finalization', async () => {
+  const privateMessage = 'private-executable-installation-path';
+  const io = scripted([tool('findFiles'), final()], {
+    'filesystem.findFiles': () => {
+      throw new HarnessError('E_EXECUTABLE_NOT_FOUND', privateMessage);
+    },
+  });
+  const result = await run(io);
+  assert.equal(
+    body(io.prompts[1]).navigation[0].error.code,
+    'E_EXECUTABLE_NOT_FOUND'
+  );
+  assert.equal(result.investigation.toolCalls, 1);
+  assert.equal(result.investigation.modelCalls, 2);
+  assert.equal(result.investigation.stopReason, 'final');
+  assert.ok(!JSON.stringify(result).includes(privateMessage));
+});
+
+for (const [label, action, code] of [
+  [
+    'parent traversal',
+    tool('readTextFile', { path: '../outside.js' }),
+    'E_PATH_OUT_OF_ROOT',
+  ],
+  [
+    'backslash traversal',
+    tool('readTextFile', { path: '..\\outside.js' }),
+    'E_PATH_OUT_OF_ROOT',
+  ],
+  [
+    'nested traversal',
+    tool('readTextFile', { path: 'src/../../outside.js' }),
+    'E_PATH_OUT_OF_ROOT',
+  ],
+  [
+    'private key',
+    tool('readTextFile', { path: 'keys/client.pem' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment file',
+    tool('readTextFile', { path: '.env' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment suffix',
+    tool('readTextFile', { path: '.env.local' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment backup',
+    tool('readTextFile', { path: '.env-backup' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment underscore',
+    tool('readTextFile', { path: '.env_local' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment mixed case',
+    tool('readTextFile', { path: 'config/.ENV.production' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment shell file',
+    tool('readTextFile', { path: '.envrc' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'environment trailing dots',
+    tool('readTextFile', { path: '.env.local. ' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'backslash sensitive component',
+    tool('readTextFile', { path: 'config\\secrets\\value' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'backslash credentials',
+    tool('readTextFile', { path: '.aws\\credentials' }),
+    'E_SENSITIVE_PATH_BLOCKED',
+  ],
+  [
+    'read option injection',
+    tool('readTextFile', { path: '--help' }),
+    'E_CAPABILITY_INPUT_INVALID',
+  ],
+  [
+    'search option injection',
+    tool('searchText', { pattern: '--files' }),
+    'E_CAPABILITY_INPUT_INVALID',
+  ],
+]) {
+  test(`real registry denies model ${label} before collector invocation and counts the attempt`, async () => {
+    let collectorCalls = 0;
+    const forbidden = () => {
+      collectorCalls += 1;
+      throw new Error('denied request reached collector');
+    };
+    const io = scripted([action, final()]);
+    io.capabilities = createCapabilityRegistry({
+      rootPath: resolve('.'),
+      collector: {
+        findFiles: forbidden,
+        searchText: forbidden,
+        readTextFile: forbidden,
+      },
+    });
+    const result = await run(io);
+    assert.equal(collectorCalls, 0);
+    assert.equal(body(io.prompts[1]).navigation[0].status, 'error');
+    assert.equal(body(io.prompts[1]).navigation[0].error.code, code);
+    assert.equal(result.investigation.toolCalls, 1);
+    assert.equal(result.investigation.modelCalls, 2);
+    assert.equal(result.investigation.stopReason, 'final');
+    assert.deepEqual(result.evidence, []);
+  });
+}
+
+test('malformed final payload cannot persist a report or replay artifact', async (t) => {
+  const { rootPath, outputDir } = await workspace(t);
+  const io = scripted([{ action: 'final', review: { summary: 'invalid' } }]);
+  const { reviewer, admission } = orchestrator(io, outputDir);
+  await assert.rejects(
+    reviewer.review({
+      rootPath,
+      request: 'r',
+      investigate: true,
+      includeReplay: true,
+    }),
+    { code: 'E_INVESTIGATION_ACTION_INVALID' }
+  );
+  assert.equal(admission.stats().active, 0);
+  await assert.rejects(readdir(outputDir), { code: 'ENOENT' });
+});
+
+test('ordinary review remains one-shot when investigation is not requested', async (t) => {
+  const { rootPath, outputDir } = await workspace(t);
+  const io = scripted([final(['ev-0001']).review]);
+  const { reviewer, admission } = orchestrator(io, outputDir);
+  const result = await reviewer.review({
+    rootPath,
+    request: 'r',
+    format: 'json',
+  });
+  assert.equal(io.prompts.length, 1);
+  assert.deepEqual(
+    io.calls.map(({ name }) => name),
+    ['filesystem.findFiles', 'filesystem.readTextFile']
+  );
+  assert.equal(result.investigation, undefined);
+  assert.equal(JSON.parse(result.reportText).investigation, undefined);
+  assert.equal(admission.stats().active, 0);
+});
+
+for (const boundary of [
+  'before seeds',
+  'after model',
+  'after tool',
+  'after final',
+]) {
+  test(`elapsed deadline ${boundary} fails without relying on a timer or returning a final review`, async () => {
+    let clock = boundary === 'before seeds' ? 1100 : 1000;
+    const invocations = [];
+    const signal = new AbortController().signal;
+    await assert.rejects(
+      executeInvestigation({
+        config: config({ investigation: { timeoutMs: 100 } }),
+        request: 'r',
+        selectedFiles: boundary === 'before seeds' ? ['a.js'] : [],
+        signal,
+        startedAt: 1000,
+        now: () => clock,
+        exchange: async (invocation) => {
+          invocations.push(invocation);
+          if (invocation.kind === 'tool') {
+            clock = 1100;
+            return { status: 'success', records: [record('a.js')] };
+          }
+          if (boundary === 'after model') clock = 1100;
+          if (boundary === 'after final') {
+            clock = 1100;
+            return final();
+          }
+          return tool('readTextFile', { path: 'a.js' });
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 'E_INVESTIGATION_TIMEOUT');
+        assert.equal(
+          error.details.investigation.stopReason,
+          'E_INVESTIGATION_TIMEOUT'
+        );
+        return true;
+      }
+    );
+    assert.equal(signal.aborted, false);
+    assert.deepEqual(
+      invocations.map(({ kind }) => kind),
+      boundary === 'before seeds'
+        ? []
+        : boundary === 'after tool'
+          ? ['model', 'tool']
+          : ['model']
+    );
+  });
+}
