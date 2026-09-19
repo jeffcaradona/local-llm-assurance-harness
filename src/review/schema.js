@@ -51,3 +51,8 @@ export const reviewSchema = {
     }
   }
 };
+
+// Copy sent to the model: no `$id`, so the model has nothing schema-level to echo back
+// and constrained decoders receive a plain instance schema.
+const { $id: _reviewSchemaId, ...modelReviewSchemaBody } = reviewSchema;
+export const modelReviewSchema = modelReviewSchemaBody;

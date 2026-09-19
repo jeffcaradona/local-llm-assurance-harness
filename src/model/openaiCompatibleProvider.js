@@ -24,7 +24,7 @@ export function createOpenAICompatibleProvider(config) {
   const endpoint = new URL('chat/completions', normalizedBase).toString();
 
   return {
-    async complete({ systemPrompt, userPrompt, signal }) {
+    async complete({ systemPrompt, userPrompt, responseSchema, signal }) {
       const inputChars = systemPrompt.length + userPrompt.length;
       if (inputChars > config.maxPromptChars) {
         throw new HarnessError('E_INPUT_BUDGET_EXCEEDED', 'Prompt exceeded configured character budget.', {
@@ -54,7 +54,13 @@ export function createOpenAICompatibleProvider(config) {
               { role: 'user', content: userPrompt }
             ],
             ...(config.maxTokens ? { max_tokens: config.maxTokens } : {}),
-            response_format: { type: 'json_object' }
+            ...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
+            // Hidden reasoning shares max_tokens with the answer; 'none' disables it on thinking models.
+            ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+            // A supplied schema lets the server constrain decoding; otherwise only JSON syntax is enforced.
+            response_format: responseSchema
+              ? { type: 'json_schema', json_schema: { name: 'review', strict: true, schema: responseSchema } }
+              : { type: 'json_object' }
           })
         });
 
@@ -78,7 +84,16 @@ export function createOpenAICompatibleProvider(config) {
           throw new HarnessError('E_MODEL_RESPONSE_PARSE', 'Model response was not valid JSON.');
         }
 
-        const content = parsed?.choices?.[0]?.message?.content;
+        const choice = parsed?.choices?.[0];
+        if (choice?.finish_reason === 'length') {
+          throw new HarnessError('E_MODEL_OUTPUT_TRUNCATED', 'Model output hit the token limit before completing.', {
+            maxTokens: config.maxTokens,
+            completionTokens: parsed?.usage?.completion_tokens,
+            contentChars: typeof choice.message?.content === 'string' ? choice.message.content.length : 0
+          });
+        }
+
+        const content = choice?.message?.content;
         if (typeof content !== 'string') {
           throw new HarnessError('E_MODEL_RESPONSE_SHAPE', 'Model response omitted text content.');
         }

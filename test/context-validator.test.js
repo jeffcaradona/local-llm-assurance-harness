@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compilePromptContext } from '../src/context/compiler.js';
 import { validateReviewPayload, verifyEvidenceReferences } from '../src/review/validator.js';
-import { REVIEW_SCHEMA_VERSION, reviewSchema } from '../src/review/schema.js';
+import { REVIEW_SCHEMA_VERSION, modelReviewSchema, reviewSchema } from '../src/review/schema.js';
 
 test('context compilation is deterministic and tracks omissions', async () => {
   const evidence = [
@@ -21,7 +21,11 @@ test('context compilation is deterministic and tracks omissions', async () => {
 test('context supplies the complete validator schema even with no evidence', async () => {
   const context = await compilePromptContext({ request: 'Review concurrency bounds.', evidence: [], maxChars: 10_000 });
   const schemaText = context.systemPrompt.split('Review response JSON Schema:\n')[1];
-  assert.deepEqual(JSON.parse(schemaText), reviewSchema);
+  const { $id, ...expectedSchema } = reviewSchema;
+  assert.ok($id);
+  assert.deepEqual(JSON.parse(schemaText), expectedSchema);
+  assert.equal('$id' in JSON.parse(schemaText), false);
+  assert.equal(context.responseSchema, modelReviewSchema);
   assert.match(context.systemPrompt, /Return only one JSON object/);
   assert.match(context.userPrompt, /No evidence supplied\./);
 

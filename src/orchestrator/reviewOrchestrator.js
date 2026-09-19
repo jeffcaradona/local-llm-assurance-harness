@@ -99,6 +99,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         const review = await provider.complete({
           systemPrompt: context.systemPrompt,
           userPrompt: context.userPrompt,
+          responseSchema: context.responseSchema,
           signal: activeSignal
         });
 

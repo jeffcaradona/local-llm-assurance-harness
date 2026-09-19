@@ -24,7 +24,10 @@
   "author": "Jeff Caradona<jeffcaradona@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "ajv": "^8.17.1"
+    "ajv": "^8.20.0"
+  },
+  "overrides": {
+    "fast-uri": "^4.2.1"
   },
   "devDependencies": {
     "prettier": "^3.9.6"
