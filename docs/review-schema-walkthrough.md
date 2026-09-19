@@ -1,4 +1,4 @@
-# Junior developer walkthrough: a JSON response that fails review validation
+# Developer walkthrough: a JSON response that fails review validation
 
 The concurrency review command failed with `E_REVIEW_SCHEMA_INVALID` because the model returned an object containing `concurrency_bounds`, while the harness expects a particular review structure. This error is about the model's response format; it does not establish whether the reviewed code has a concurrency bug.
 
