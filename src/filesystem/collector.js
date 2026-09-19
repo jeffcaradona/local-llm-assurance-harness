@@ -1,28 +1,48 @@
 import { lstat, open, realpath } from 'node:fs/promises';
-import { relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { HarnessError } from '../errors.js';
 
-function makeEvidenceId(index) {
-  return `ev-${String(index + 1).padStart(4, '0')}`;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
 function escapesRoot(relPath) {
-  return relPath === '..' || relPath.startsWith('../') || relPath.startsWith('..\\');
+  return (
+    isAbsolute(relPath) ||
+    relPath === '..' ||
+    relPath.startsWith('../') ||
+    relPath.startsWith('..\\')
+  );
 }
 
-export function createFilesystemCollector({ rootPath, runner, limits, redactor }) {
-  const canonicalRootPromise = realpath(resolve(rootPath));
+export function createFilesystemCollector({
+  rootPath,
+  runner,
+  limits,
+  redactor,
+}) {
+  let canonicalRootPromise;
+  const getCanonicalRoot = () =>
+    (canonicalRootPromise ??= realpath(resolve(rootPath)));
 
   async function assertPathContained(absolutePath) {
-    const rootReal = await canonicalRootPromise;
-    const resolved = await realpath(absolutePath);
+    const rootReal = await getCanonicalRoot();
+    let resolved;
+    try {
+      resolved = await realpath(absolutePath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new HarnessError(
+          'E_FILE_NOT_FOUND',
+          'Requested file does not exist.',
+          { absolutePath }
+        );
+      }
+      throw error;
+    }
     const rel = relative(rootReal, resolved);
     if (escapesRoot(rel)) {
-      throw new HarnessError('E_PATH_OUT_OF_ROOT', 'Path escapes approved root.', { absolutePath });
+      throw new HarnessError(
+        'E_PATH_OUT_OF_ROOT',
+        'Path escapes approved root.',
+        { absolutePath }
+      );
     }
     return { rootReal };
   }
@@ -30,7 +50,11 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
   async function readBoundedText(absolutePath, maxBytes, rootReal) {
     const pathStat = await lstat(absolutePath);
     if (pathStat.isSymbolicLink()) {
-      throw new HarnessError('E_SYMLINK_BLOCKED', 'Symlink paths are not collected.', { absolutePath });
+      throw new HarnessError(
+        'E_SYMLINK_BLOCKED',
+        'Symlink paths are not collected.',
+        { absolutePath }
+      );
     }
 
     const file = await open(absolutePath, 'r');
@@ -39,11 +63,22 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
       const postResolvedPath = await realpath(absolutePath);
       const postRel = relative(rootReal, postResolvedPath);
       if (escapesRoot(postRel)) {
-        throw new HarnessError('E_PATH_OUT_OF_ROOT', 'Path escaped approved root during read.', { absolutePath });
+        throw new HarnessError(
+          'E_PATH_OUT_OF_ROOT',
+          'Path escaped approved root during read.',
+          { absolutePath }
+        );
       }
       const currentPathStat = await lstat(postResolvedPath);
-      if (handleStat.dev !== currentPathStat.dev || handleStat.ino !== currentPathStat.ino) {
-        throw new HarnessError('E_PATH_RACE_DETECTED', 'File changed during path validation/read boundary.', { absolutePath });
+      if (
+        handleStat.dev !== currentPathStat.dev ||
+        handleStat.ino !== currentPathStat.ino
+      ) {
+        throw new HarnessError(
+          'E_PATH_RACE_DETECTED',
+          'File changed during path validation/read boundary.',
+          { absolutePath }
+        );
       }
 
       const retain = Math.min(handleStat.size, maxBytes);
@@ -51,13 +86,17 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
       const { bytesRead } = await file.read(buffer, 0, retain, 0);
       const body = buffer.subarray(0, bytesRead);
       if (body.includes(0)) {
-        throw new HarnessError('E_BINARY_FILE_REJECTED', 'Binary file content is not supported.', { absolutePath });
+        throw new HarnessError(
+          'E_BINARY_FILE_REJECTED',
+          'Binary file content is not supported.',
+          { absolutePath }
+        );
       }
       return {
         content: body.toString('utf8'),
         retainedBytes: bytesRead,
         originalBytes: handleStat.size,
-        truncated: handleStat.size > bytesRead
+        truncated: handleStat.size > bytesRead,
       };
     } finally {
       await file.close();
@@ -65,57 +104,102 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
   }
 
   async function runFd({ signal, limit }) {
-    const rootReal = await canonicalRootPromise;
+    const rootReal = await getCanonicalRoot();
     const result = await runner.run(
       'fd',
-      ['--type', 'f', '--hidden', '--color', 'never', '--exclude', '.git', '--exclude', 'node_modules', '.'],
+      [
+        '--type',
+        'f',
+        '--hidden',
+        '--color',
+        'never',
+        '--exclude',
+        '.git',
+        '--exclude',
+        'node_modules',
+        '.',
+      ],
       {
-      cwd: rootReal,
-      signal,
-      timeoutMs: limits.subprocessTimeoutMs,
-      stdoutMaxBytes: limits.subprocessStdoutBytes,
-      stderrMaxBytes: limits.subprocessStderrBytes,
-      env: {}
+        cwd: rootReal,
+        signal,
+        timeoutMs: limits.subprocessTimeoutMs,
+        stdoutMaxBytes: limits.subprocessStdoutBytes,
+        stderrMaxBytes: limits.subprocessStderrBytes,
+        env: {},
       }
     );
     if (result.exitCode !== 0) {
-      throw new HarnessError('E_FIND_FAILED', 'File discovery failed.', { stderr: result.stderr, exitCode: result.exitCode });
+      throw new HarnessError('E_FIND_FAILED', 'File discovery failed.', {
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+      });
     }
-    const files = await Promise.all(result.stdout
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map(async (item) => {
-        const abs = await realpath(resolve(rootReal, item));
-        return relative(rootReal, abs).replaceAll('\\', '/');
-      }));
-    return files
-      .sort()
-      .slice(0, limit ?? limits.maxFiles);
+    const files = await Promise.all(
+      result.stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map(async (item) => {
+          const abs = await realpath(resolve(rootReal, item));
+          return relative(rootReal, abs).replaceAll('\\', '/');
+        })
+    );
+    return files.sort().slice(0, limit ?? limits.maxFiles);
   }
 
   async function searchText({ pattern, signal, maxMatches }) {
-    const rootReal = await canonicalRootPromise;
-    const result = await runner.run('rg', ['--json', '--fixed-strings', '--color', 'never', '--', pattern, rootReal], {
-      cwd: rootReal,
-      signal,
-      timeoutMs: limits.subprocessTimeoutMs,
-      stdoutMaxBytes: limits.subprocessStdoutBytes,
-      stderrMaxBytes: limits.subprocessStderrBytes,
-      env: {}
-    });
+    const rootReal = await getCanonicalRoot();
+    const matchLimit = maxMatches ?? limits.maxSearchMatches;
+    const result = await runner.run(
+      'rg',
+      [
+        '--json',
+        '--fixed-strings',
+        '--hidden',
+        '--glob',
+        '!.git/**',
+        '--glob',
+        '!node_modules/**',
+        '--max-count',
+        String(matchLimit),
+        '--max-filesize',
+        String(limits.maxFileBytes),
+        '--color',
+        'never',
+        '--',
+        pattern,
+        rootReal,
+      ],
+      {
+        cwd: rootReal,
+        signal,
+        timeoutMs: limits.subprocessTimeoutMs,
+        stdoutMaxBytes: limits.subprocessStdoutBytes,
+        stderrMaxBytes: limits.subprocessStderrBytes,
+        env: {},
+      }
+    );
 
     if (result.exitCode !== 0 && result.exitCode !== 1) {
-      throw new HarnessError('E_SEARCH_FAILED', 'Text search failed.', { stderr: result.stderr, exitCode: result.exitCode });
+      throw new HarnessError('E_SEARCH_FAILED', 'Text search failed.', {
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+      });
     }
 
     const matches = [];
-    for (const line of result.stdout.split(/\r?\n/)) {
+    const lines = result.stdout.split(/\r?\n/);
+    for (const [index, line] of lines.entries()) {
       if (!line.trim()) continue;
       let item;
       try {
         item = JSON.parse(line);
       } catch {
-        throw new HarnessError('E_SEARCH_OUTPUT_INVALID', 'Search output was malformed.', { line });
+        if (result.stdoutTruncated && index === lines.length - 1) break;
+        throw new HarnessError(
+          'E_SEARCH_OUTPUT_INVALID',
+          'Search output was malformed.',
+          { line }
+        );
       }
       if (item.type !== 'match') continue;
       const relPath = relative(rootReal, item.data.path.text);
@@ -127,21 +211,29 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
         retainedBytes: Buffer.byteLength(item.data.lines.text),
         originalBytes: Buffer.byteLength(item.data.lines.text),
         truncated: false,
-        redaction: redactor.describe()
+        redaction: redactor.describe(),
       });
-      if (matches.length >= (maxMatches ?? limits.maxSearchMatches)) break;
+      if (matches.length >= matchLimit) break;
     }
-    return matches.sort((a, b) => `${a.relativePath}:${a.lineStart}`.localeCompare(`${b.relativePath}:${b.lineStart}`));
+    return matches.sort((a, b) =>
+      `${a.relativePath}:${a.lineStart}`.localeCompare(
+        `${b.relativePath}:${b.lineStart}`
+      )
+    );
   }
 
   async function readTextFile({ path, signal, maxBytes }) {
     if (signal?.aborted) {
       throw new HarnessError('E_ABORTED', 'Read cancelled before start.');
     }
-    const rootReal = await canonicalRootPromise;
+    const rootReal = await getCanonicalRoot();
     const absolutePath = resolve(rootReal, path);
     const containment = await assertPathContained(absolutePath);
-    const result = await readBoundedText(absolutePath, maxBytes ?? limits.maxFileBytes, containment.rootReal);
+    const result = await readBoundedText(
+      absolutePath,
+      maxBytes ?? limits.maxFileBytes,
+      containment.rootReal
+    );
     const redacted = redactor.redact(result.content);
     return {
       relativePath: path,
@@ -151,57 +243,13 @@ export function createFilesystemCollector({ rootPath, runner, limits, redactor }
       retainedBytes: Buffer.byteLength(redacted),
       originalBytes: result.originalBytes,
       truncated: result.truncated,
-      redaction: redactor.describe()
+      redaction: redactor.describe(),
     };
-  }
-
-  async function toEvidenceItems(records, capability) {
-    return records.map((record, index) => ({
-      id: makeEvidenceId(index),
-      capability,
-      sourcePath: record.relativePath,
-      lineRange: record.lineStart ? [record.lineStart, record.lineEnd] : null,
-      content: record.content,
-      collectedAt: nowIso(),
-      retainedBytes: record.retainedBytes,
-      originalBytes: record.originalBytes,
-      truncated: record.truncated,
-      redaction: record.redaction
-    }));
   }
 
   return {
     findFiles: runFd,
     readTextFile,
     searchText,
-    async collect({ selectedFiles, searches, signal }) {
-      let totalBytes = 0;
-      const evidence = [];
-
-      const files = selectedFiles?.length ? [...new Set(selectedFiles)].sort() : await runFd({ signal, limit: limits.maxFiles });
-
-      for (const pathText of files) {
-        if (totalBytes >= limits.maxEvidenceBytes) break;
-        const item = await readTextFile({ path: pathText, signal, maxBytes: limits.maxFileBytes });
-        const [ev] = await toEvidenceItems([item], 'filesystem.readTextFile');
-        ev.id = makeEvidenceId(evidence.length);
-        evidence.push(ev);
-        totalBytes += ev.retainedBytes;
-      }
-
-      for (const pattern of searches ?? []) {
-        if (totalBytes >= limits.maxEvidenceBytes) break;
-        const hits = await searchText({ pattern, signal, maxMatches: limits.maxSearchMatches });
-        const items = await toEvidenceItems(hits, 'filesystem.searchText');
-        for (const item of items) {
-          item.id = makeEvidenceId(evidence.length);
-          if (totalBytes + item.retainedBytes > limits.maxEvidenceBytes) break;
-          evidence.push(item);
-          totalBytes += item.retainedBytes;
-        }
-      }
-
-      return evidence;
-    }
   };
 }

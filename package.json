@@ -7,13 +7,13 @@
     "local-llm-assurance-harness": "./src/index.js"
   },
   "scripts": {
-    "start": "node  --env-file=.env  ./src/index.js",
+    "start": "node --env-file-if-exists=.env ./src/index.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=22.0.0 <=26"
+    "node": ">=22.0.0 <25"
   },
   "keywords": [
     "llm",

@@ -1,20 +1,27 @@
 import { HarnessError } from '../errors.js';
 
-export function createLifecycleManager({ admission, shutdownGraceMs, shutdownDeadlineMs }) {
+export function createLifecycleManager({
+  admission,
+  shutdownGraceMs,
+  shutdownDeadlineMs,
+}) {
   let shuttingDown = false;
   const activeControllers = new Set();
 
   return {
     createRequestScope() {
       if (shuttingDown) {
-        throw new HarnessError('E_SHUTDOWN_REJECTED', 'Harness is shutting down.');
+        throw new HarnessError(
+          'E_SHUTDOWN_REJECTED',
+          'Harness is shutting down.'
+        );
       }
       const controller = new AbortController();
       activeControllers.add(controller);
       return {
         signal: controller.signal,
         abort: () => controller.abort(),
-        done: () => activeControllers.delete(controller)
+        done: () => activeControllers.delete(controller),
       };
     },
     async shutdown() {
@@ -34,6 +41,6 @@ export function createLifecycleManager({ admission, shutdownGraceMs, shutdownDea
       while (admission.stats().active > 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-    }
+    },
   };
 }

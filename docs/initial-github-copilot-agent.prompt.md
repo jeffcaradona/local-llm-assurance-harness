@@ -20,17 +20,17 @@ The initial product is a read-only repository reviewer. Infrastructure diagnosti
 
 ## Technical preferences
 
-* Modern JavaScript with native ESM and `"type": "module"`.
-* Choose a currently supported Node.js LTS baseline, verify it against official documentation, and document the exact supported versions.
-* JavaScript, not TypeScript; use JSDoc for important contracts.
-* Functional core, imperative shell.
-* Explicit dependency injection through a composition root.
-* Promises and async/await with consistent asynchronous failure behavior.
-* Native Node APIs where practical.
-* Native `node:test` and `node:assert/strict`.
-* Minimal dependencies, but use a maintained JSON Schema validator rather than creating an incomplete one.
-* No framework, database, Express server, worker pool, or generic agent framework in milestone one.
-* Comments should explain ownership, trade-offs, and non-obvious behavior.
+- Modern JavaScript with native ESM and `"type": "module"`.
+- Choose a currently supported Node.js LTS baseline, verify it against official documentation, and document the exact supported versions.
+- JavaScript, not TypeScript; use JSDoc for important contracts.
+- Functional core, imperative shell.
+- Explicit dependency injection through a composition root.
+- Promises and async/await with consistent asynchronous failure behavior.
+- Native Node APIs where practical.
+- Native `node:test` and `node:assert/strict`.
+- Minimal dependencies, but use a maintained JSON Schema validator rather than creating an incomplete one.
+- No framework, database, Express server, worker pool, or generic agent framework in milestone one.
+- Comments should explain ownership, trade-offs, and non-obvious behavior.
 
 Avoid mutable global state, hidden service locators, import-time I/O, detached promises, and monolithic files.
 
@@ -66,18 +66,18 @@ npm test
 
 Separate these responsibilities:
 
-* Configuration and composition.
-* Review orchestration.
-* Capability registry and authorization.
-* Filesystem collection.
-* Subprocess execution.
-* Redaction.
-* Context compilation.
-* Model-provider adapters.
-* Review validation and evidence verification.
-* Reporting.
-* Audit persistence and replay.
-* Lifecycle management.
+- Configuration and composition.
+- Review orchestration.
+- Capability registry and authorization.
+- Filesystem collection.
+- Subprocess execution.
+- Redaction.
+- Context compilation.
+- Model-provider adapters.
+- Review validation and evidence verification.
+- Reporting.
+- Audit persistence and replay.
+- Lifecycle management.
 
 Keep policy, validation, context selection, and report transformation deterministic and independently testable.
 
@@ -115,17 +115,17 @@ Policy enforcement must exist in code, not merely in prompts.
 
 Use `fd` for discovery and `rg --json` for search. Use Node filesystem APIs for bounded file reads.
 
-* Report unavailable dependencies with clear structured errors.
-* Do not silently substitute different search behavior.
-* Handle `rg` no-match status as a valid empty result.
-* Use fixed executables and trusted argument construction.
-* Use `spawn()` with argument arrays and `shell: false`.
-* Prevent option injection, including patterns or paths beginning with `-`.
-* Restrict working directories and inherited environment variables.
-* Bound stdout and stderr separately.
-* Bound file counts, match counts, file bytes, and total retained evidence.
-* Reject binary or unsupported file content explicitly.
-* Use deterministic result ordering.
+- Report unavailable dependencies with clear structured errors.
+- Do not silently substitute different search behavior.
+- Handle `rg` no-match status as a valid empty result.
+- Use fixed executables and trusted argument construction.
+- Use `spawn()` with argument arrays and `shell: false`.
+- Prevent option injection, including patterns or paths beginning with `-`.
+- Restrict working directories and inherited environment variables.
+- Bound stdout and stderr separately.
+- Bound file counts, match counts, file bytes, and total retained evidence.
+- Reject binary or unsupported file content explicitly.
+- Use deterministic result ordering.
 
 Canonicalize the approved root and enforce containment. Do not follow symlinks or junctions outside it. Document filesystem race limitations honestly: path validation is not an OS sandbox against concurrent hostile mutation.
 
@@ -139,12 +139,12 @@ Implement an adapter for a configurable OpenAI-compatible chat-completions endpo
 
 Support configurable:
 
-* Base URL and model identifier.
-* Optional authentication.
-* Request deadline.
-* Response byte limit.
-* Input budget.
-* Generation limit where supported.
+- Base URL and model identifier.
+- Optional authentication.
+- Request deadline.
+- Response byte limit.
+- Input budget.
+- Generation limit where supported.
 
 Start with non-streaming inference unless streaming is required for the first milestone. Bound response bytes while reading the HTTP body, before parsing JSON.
 
@@ -158,25 +158,25 @@ Normalize transport, timeout, HTTP, parsing, and schema failures into stable err
 
 Each evidence item must include:
 
-* Run-local unique ID.
-* Capability and relative source path.
-* Line range where applicable.
-* Sanitized content.
-* Collection timestamp.
-* Retained byte count.
-* Original byte count when known.
-* Truncation and redaction metadata.
+- Run-local unique ID.
+- Capability and relative source path.
+- Line range where applicable.
+- Sanitized content.
+- Collection timestamp.
+- Retained byte count.
+- Original byte count when known.
+- Truncation and redaction metadata.
 
 The context compiler must preserve IDs and record which items were included or omitted. Use honest byte or character budgets unless actual model tokenization is implemented.
 
 Require a strict, versioned review schema containing:
 
-* Summary.
-* Decision: `needs_attention`, `request_changes`, or `no_findings_in_supplied_evidence`.
-* Observations.
-* Inferences, with explicitly model-reported confidence.
-* Findings: severity, category, explanation, consequence, recommendation, and evidence IDs.
-* Limitations, including omitted or truncated evidence.
+- Summary.
+- Decision: `needs_attention`, `request_changes`, or `no_findings_in_supplied_evidence`.
+- Observations.
+- Inferences, with explicitly model-reported confidence.
+- Findings: severity, category, explanation, consequence, recommendation, and evidence IDs.
+- Limitations, including omitted or truncated evidence.
 
 Validate every reference against evidence supplied to the model—not merely evidence collected earlier.
 
@@ -190,11 +190,11 @@ Propagate `AbortSignal` through collection, subprocesses, model calls, and orche
 
 Provide a small bounded admission controller with:
 
-* Maximum active requests.
-* Maximum queued requests.
-* Explicit saturation errors.
-* Queued cancellation.
-* Slot release on every settlement path.
+- Maximum active requests.
+- Maximum queued requests.
+- Explicit saturation errors.
+- Queued cancellation.
+- Slot release on every settlement path.
 
 At shutdown:
 
@@ -228,21 +228,21 @@ Use fake providers, injectable process adapters, synthetic replay fixtures, and 
 
 Cover:
 
-* Configuration validation.
-* Capability authorization and invalid inputs.
-* Path traversal, symlink/junction containment, and option injection.
-* Missing executables and search no-match results.
-* Output limits and malformed tool output.
-* Already-aborted signals and timeout/exit races.
-* Queue saturation and cancellation.
-* Resource release and exactly-once settlement.
-* Redaction before model invocation and persistence.
-* Oversized, malformed, and schema-invalid model responses.
-* Unknown or omitted evidence references.
-* Context truncation and deterministic ordering.
-* Prompt-injection text remaining evidence rather than instructions.
-* Cooperative shutdown and bounded forced shutdown.
-* Replay without external calls.
+- Configuration validation.
+- Capability authorization and invalid inputs.
+- Path traversal, symlink/junction containment, and option injection.
+- Missing executables and search no-match results.
+- Output limits and malformed tool output.
+- Already-aborted signals and timeout/exit races.
+- Queue saturation and cancellation.
+- Resource release and exactly-once settlement.
+- Redaction before model invocation and persistence.
+- Oversized, malformed, and schema-invalid model responses.
+- Unknown or omitted evidence references.
+- Context truncation and deterministic ordering.
+- Prompt-injection text remaining evidence rather than instructions.
+- Cooperative shutdown and bounded forced shutdown.
+- Replay without external calls.
 
 Assert stable error codes rather than message wording. Avoid timing-based sleeps where controllable synchronization is possible.
 
@@ -250,15 +250,15 @@ Assert stable error codes rather than message wording. Avoid timing-based sleeps
 
 Create:
 
-* `README.md`: purpose, setup, configuration, examples, limitations, exit codes, and roadmap.
-* `docs/architecture.md`: boundaries and ownership.
-* `docs/threat-model.md`: protections and residual risks.
-* `docs/adding-a-capability.md`.
-* `docs/adding-a-model-provider.md`.
-* `.github/copilot-instructions.md`: enduring project rules.
-* `.env.example` containing placeholders only.
-* `.gitignore` covering credentials, local configuration, and run artifacts.
-* CI running deterministic tests on the documented Windows and Linux runtime matrix.
+- `README.md`: purpose, setup, configuration, examples, limitations, exit codes, and roadmap.
+- `docs/architecture.md`: boundaries and ownership.
+- `docs/threat-model.md`: protections and residual risks.
+- `docs/adding-a-capability.md`.
+- `docs/adding-a-model-provider.md`.
+- `.github/copilot-instructions.md`: enduring project rules.
+- `.env.example` containing placeholders only.
+- `.gitignore` covering credentials, local configuration, and run artifacts.
+- CI running deterministic tests on the documented Windows and Linux runtime matrix.
 
 Keep shell examples fully visible and individually copyable. Prefer single-line PowerShell commands; avoid heredocs and nested shell quoting.
 
@@ -268,16 +268,16 @@ Do not publish a repository, push commits, change remote settings, or select a l
 
 Document, but do not implement:
 
-* Git diff review.
-* Read-only `oc` and `az` adapters with explicit cluster/subscription context.
-* `istioctl` integration after its real interface is supplied.
-* GitHub Copilot CLI integration using a currently documented supported interface.
-* MCP server transport.
-* Express API.
-* Model-directed tool loops with bounded iterations.
-* Multi-model comparison and evaluation suites.
-* Human-approved mutations.
-* Persistent jobs and worker-thread preprocessing.
+- Git diff review.
+- Read-only `oc` and `az` adapters with explicit cluster/subscription context.
+- `istioctl` integration after its real interface is supplied.
+- GitHub Copilot CLI integration using a currently documented supported interface.
+- MCP server transport.
+- Express API.
+- Model-directed tool loops with bounded iterations.
+- Multi-model comparison and evaluation suites.
+- Human-approved mutations.
+- Persistent jobs and worker-thread preprocessing.
 
 Do not assume a Copilot agent runtime has the same permissions or semantics as a raw model endpoint.
 
@@ -287,14 +287,14 @@ First inspect the repository and preserve existing work. Briefly state assumptio
 
 Completion requires:
 
-* Help and example commands work.
-* Deterministic tests pass.
-* A fake-provider end-to-end review succeeds.
-* The real endpoint adapter is implemented.
-* Resource bounds and cancellation are tested.
-* Invalid responses cannot become successful reports.
-* Evidence references are checked against supplied context.
-* Audit and replay privacy behavior is documented.
-* Unverified live integration behavior is clearly identified.
+- Help and example commands work.
+- Deterministic tests pass.
+- A fake-provider end-to-end review succeeds.
+- The real endpoint adapter is implemented.
+- Resource bounds and cancellation are tested.
+- Invalid responses cannot become successful reports.
+- Evidence references are checked against supplied context.
+- Audit and replay privacy behavior is documented.
+- Unverified live integration behavior is clearly identified.
 
 Finish with what was implemented, tests actually run, remaining limitations, and exact next commands. Do not claim live-model or cross-platform verification unless performed.

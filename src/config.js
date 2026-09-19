@@ -18,7 +18,7 @@ export const DEFAULT_LIMITS = Object.freeze({
   activeRequests: 2,
   queuedRequests: 4,
   shutdownGraceMs: 1_500,
-  shutdownDeadlineMs: 3_000
+  shutdownDeadlineMs: 3_000,
 });
 
 const REASONING_EFFORTS = ['none', 'low', 'medium', 'high'];
@@ -30,6 +30,10 @@ export function resolveRuntimeConfig(env = process.env) {
   const temperature = env.HARNESS_MODEL_TEMPERATURE?.trim()
     ? Number(env.HARNESS_MODEL_TEMPERATURE)
     : DEFAULT_LIMITS.modelTemperature;
+  // Keep an empty optional value equivalent to omitting the provider limit.
+  const maxTokens = env.HARNESS_MODEL_MAX_TOKENS?.trim()
+    ? Number(env.HARNESS_MODEL_MAX_TOKENS)
+    : undefined;
   const outputDir = env.HARNESS_OUTPUT_DIR
     ? resolve(env.HARNESS_OUTPUT_DIR)
     : resolve(process.cwd(), '..', 'harness-runs');
@@ -45,35 +49,83 @@ export function resolveRuntimeConfig(env = process.env) {
       maxPromptChars: DEFAULT_LIMITS.maxPromptChars,
       temperature,
       reasoningEffort: env.HARNESS_MODEL_REASONING_EFFORT?.trim() || undefined,
-      maxTokens: env.HARNESS_MODEL_MAX_TOKENS ? Number(env.HARNESS_MODEL_MAX_TOKENS) : undefined
+      maxTokens,
     },
     review: {
       outputDir,
-      instructionFiles: []
+      instructionFiles: [],
     },
-    limits: { ...DEFAULT_LIMITS, requestTimeoutMs }
+    limits: { ...DEFAULT_LIMITS, requestTimeoutMs },
   };
 }
 
 export function validateRuntimeConfig(config) {
   if (!config?.model?.baseUrl || !config.model.model) {
-    throw new HarnessError('E_CONFIG_INVALID', 'Model endpoint and model id are required.');
+    throw new HarnessError(
+      'E_CONFIG_INVALID',
+      'Model endpoint and model id are required.'
+    );
   }
-  if (!Number.isInteger(config.model.timeoutMs) || config.model.timeoutMs < 1 || config.model.timeoutMs > 2_147_483_647) {
-    throw new HarnessError('E_CONFIG_INVALID', 'Model timeout must be an integer between 1 and 2147483647 milliseconds.');
+  if (
+    !Number.isInteger(config.model.timeoutMs) ||
+    config.model.timeoutMs < 1 ||
+    config.model.timeoutMs > 2_147_483_647
+  ) {
+    throw new HarnessError(
+      'E_CONFIG_INVALID',
+      'Model timeout must be an integer between 1 and 2147483647 milliseconds.'
+    );
   }
-  if (!Number.isFinite(config.model.temperature) || config.model.temperature < 0 || config.model.temperature > 2) {
-    throw new HarnessError('E_CONFIG_INVALID', 'Model temperature must be a number between 0 and 2.');
+  if (
+    config.model.maxTokens !== undefined &&
+    (!Number.isSafeInteger(config.model.maxTokens) ||
+      config.model.maxTokens < 1)
+  ) {
+    throw new HarnessError(
+      'E_CONFIG_INVALID',
+      'Model max tokens must be a positive integer when configured.'
+    );
   }
-  if (config.model.reasoningEffort !== undefined && !REASONING_EFFORTS.includes(config.model.reasoningEffort)) {
-    throw new HarnessError('E_CONFIG_INVALID', `Model reasoning effort must be one of: ${REASONING_EFFORTS.join(', ')}.`);
+  if (
+    !Number.isFinite(config.model.temperature) ||
+    config.model.temperature < 0 ||
+    config.model.temperature > 2
+  ) {
+    throw new HarnessError(
+      'E_CONFIG_INVALID',
+      'Model temperature must be a number between 0 and 2.'
+    );
   }
-  const url = new URL(config.model.baseUrl);
+  if (
+    config.model.reasoningEffort !== undefined &&
+    !REASONING_EFFORTS.includes(config.model.reasoningEffort)
+  ) {
+    throw new HarnessError(
+      'E_CONFIG_INVALID',
+      `Model reasoning effort must be one of: ${REASONING_EFFORTS.join(', ')}.`
+    );
+  }
+  let url;
+  try {
+    url = new URL(config.model.baseUrl);
+  } catch {
+    throw new HarnessError(
+      'E_CONFIG_INVALID',
+      'Model endpoint must be a valid URL.'
+    );
+  }
   const host = (url.hostname || '').toLowerCase();
-  if (!config.model.allowNonLocalEndpoint && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
-    throw new HarnessError('E_REMOTE_ENDPOINT_FORBIDDEN', 'Non-local model endpoint requires explicit opt-in.', {
-      host
-    });
+  if (
+    !config.model.allowNonLocalEndpoint &&
+    !['127.0.0.1', 'localhost', '::1'].includes(host)
+  ) {
+    throw new HarnessError(
+      'E_REMOTE_ENDPOINT_FORBIDDEN',
+      'Non-local model endpoint requires explicit opt-in.',
+      {
+        host,
+      }
+    );
   }
   return config;
 }

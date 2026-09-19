@@ -1,10 +1,17 @@
-export function renderReviewReport({ format, review, request, includedEvidenceIds, omittedEvidenceIds, runId }) {
+export function renderReviewReport({
+  format,
+  review,
+  request,
+  includedEvidenceIds,
+  omittedEvidenceIds,
+  runId,
+}) {
   const payload = {
     runId,
     request,
     includedEvidenceIds,
     omittedEvidenceIds,
-    review
+    review,
   };
 
   if (format === 'json') {
@@ -13,8 +20,9 @@ export function renderReviewReport({ format, review, request, includedEvidenceId
 
   const findings = review.findings.length
     ? review.findings
-        .map((item, idx) =>
-          `${idx + 1}. [${item.severity}] ${item.category}\n   ${item.explanation}\n   consequence: ${item.consequence}\n   recommendation: ${item.recommendation}\n   evidence: ${item.evidenceIds.join(', ')}`
+        .map(
+          (item, idx) =>
+            `${idx + 1}. [${item.severity}] ${item.category}\n   ${item.explanation}\n   consequence: ${item.consequence}\n   recommendation: ${item.recommendation}\n   evidence: ${item.evidenceIds.join(', ')}`
         )
         .join('\n')
     : 'No findings in supplied evidence.';
@@ -27,6 +35,6 @@ export function renderReviewReport({ format, review, request, includedEvidenceId
     `Omitted evidence: ${omittedEvidenceIds.join(', ') || 'none'}`,
     '',
     'Findings:',
-    findings
+    findings,
   ].join('\n');
 }
