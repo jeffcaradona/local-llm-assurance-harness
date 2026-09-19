@@ -9,6 +9,8 @@ import {
 import { renderReviewReport } from '../reporting/render.js';
 import { persistRunArtifacts } from '../audit/manifest.js';
 import { REVIEW_SCHEMA_VERSION } from '../review/schema.js';
+import { createRedactor } from '../redaction.js';
+import { runInvestigation } from './investigationLoop.js';
 
 function makeEvidenceId(index) {
   return `ev-${String(index + 1).padStart(4, '0')}`;
@@ -35,12 +37,23 @@ const AUTO_DISCOVERY_SKIPPABLE_CODES = new Set([
   'E_SYMLINK_BLOCKED',
 ]);
 
+function checkInvestigationAbort(signal) {
+  if (!signal.aborted) return;
+  throw new HarnessError(
+    signal.reason?.code === 'E_INVESTIGATION_TIMEOUT'
+      ? 'E_INVESTIGATION_TIMEOUT'
+      : 'E_ABORTED',
+    'Investigation cancelled before finalization.'
+  );
+}
+
 export function createReviewOrchestrator({
   config,
   capabilities,
   provider,
   admission,
   lifecycle,
+  redactor = createRedactor(),
 }) {
   return {
     async review({
@@ -51,6 +64,8 @@ export function createReviewOrchestrator({
       format = 'terminal',
       instructionFiles = [],
       includeReplay = false,
+      investigate = false,
+      onProgress,
       signal,
     }) {
       if (!request) {
@@ -60,73 +75,102 @@ export function createReviewOrchestrator({
         );
       }
 
-      const scope = lifecycle.createRequestScope();
+      let scope;
       let acquired = false;
+      let deadlineTimer;
+      let startedAt;
+      let activeSignal;
+      let investigation;
+      let stage = 'admission';
       const runId = randomUUID();
 
       try {
-        await admission.acquire(signal);
-        acquired = true;
-        const reviewRoot = resolve(rootPath);
-        const activeSignal = AbortSignal.any(
+        scope = lifecycle.createRequestScope();
+        const requestSignal = AbortSignal.any(
           [signal, scope.signal].filter(Boolean)
         );
-        const collectedAt = new Date().toISOString();
-        const findFiles = capabilities.get('filesystem.findFiles');
-        const readTextFile = capabilities.get('filesystem.readTextFile');
-        const searchText = capabilities.get('filesystem.searchText');
-        const evidence = [];
-        let totalBytes = 0;
-        const explicitFileSelection = selectedFiles.length > 0;
-
-        const fileList = selectedFiles.length
-          ? [...new Set(selectedFiles)].sort()
-          : await findFiles.invoke({
-              signal: activeSignal,
-              limit: config.limits.maxFiles,
-            });
-
-        for (const file of fileList) {
-          if (totalBytes >= config.limits.maxEvidenceBytes) break;
-          let record;
-          try {
-            record = await readTextFile.invoke({
-              path: file,
-              signal: activeSignal,
-              maxBytes: config.limits.maxFileBytes,
-            });
-          } catch (error) {
-            if (
-              !explicitFileSelection &&
-              AUTO_DISCOVERY_SKIPPABLE_CODES.has(error?.code)
-            ) {
-              continue;
-            }
-            throw error;
-          }
-          const item = withEvidenceMeta(
-            record,
-            'filesystem.readTextFile',
-            evidence.length,
-            collectedAt
-          );
-          if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes)
-            break;
-          evidence.push(item);
-          totalBytes += item.retainedBytes;
+        await admission.acquire(requestSignal);
+        acquired = true;
+        startedAt = Date.now();
+        const deadlineController = investigate
+          ? new AbortController()
+          : undefined;
+        if (deadlineController) {
+          deadlineTimer = setTimeout(() => {
+            deadlineController.abort(
+              new HarnessError(
+                'E_INVESTIGATION_TIMEOUT',
+                'Investigation deadline exceeded.'
+              )
+            );
+          }, config.investigation.timeoutMs);
         }
-
-        for (const pattern of searches) {
-          if (totalBytes >= config.limits.maxEvidenceBytes) break;
-          const records = await searchText.invoke({
-            pattern,
+        const reviewRoot = resolve(rootPath);
+        activeSignal = AbortSignal.any(
+          [requestSignal, deadlineController?.signal].filter(Boolean)
+        );
+        let evidence;
+        let context;
+        let review;
+        let investigationReplayBundle;
+        if (investigate) {
+          stage = 'instructions';
+          ({
+            evidence,
+            context,
+            review,
+            investigation,
+            replayBundle: investigationReplayBundle,
+          } = await runInvestigation({
+            config,
+            capabilities,
+            provider,
+            redactor,
+            request,
+            selectedFiles,
+            searches,
+            instructionFiles,
             signal: activeSignal,
-            maxMatches: config.limits.maxSearchMatches,
-          });
-          for (const record of records) {
+            onProgress,
+            startedAt,
+          }));
+        } else {
+          const collectedAt = new Date().toISOString();
+          const findFiles = capabilities.get('filesystem.findFiles');
+          const readTextFile = capabilities.get('filesystem.readTextFile');
+          const searchText = capabilities.get('filesystem.searchText');
+          evidence = [];
+          let totalBytes = 0;
+          const explicitFileSelection = selectedFiles.length > 0;
+
+          const fileList = selectedFiles.length
+            ? [...new Set(selectedFiles)].sort()
+            : await findFiles.invoke({
+                signal: activeSignal,
+                limit: config.limits.maxFiles,
+              });
+
+          for (const file of fileList) {
+            if (totalBytes >= config.limits.maxEvidenceBytes) break;
+            let record;
+            try {
+              record = await readTextFile.invoke({
+                path: file,
+                signal: activeSignal,
+                maxBytes: config.limits.maxFileBytes,
+              });
+            } catch (error) {
+              if (
+                !explicitFileSelection &&
+                AUTO_DISCOVERY_SKIPPABLE_CODES.has(error?.code)
+              ) {
+                continue;
+              }
+              throw error;
+            }
             const item = withEvidenceMeta(
               record,
-              'filesystem.searchText',
+              'filesystem.readTextFile',
               evidence.length,
               collectedAt
             );
@@ -138,23 +182,49 @@ export function createReviewOrchestrator({
             evidence.push(item);
             totalBytes += item.retainedBytes;
           }
+
+          for (const pattern of searches) {
+            if (totalBytes >= config.limits.maxEvidenceBytes) break;
+            const records = await searchText.invoke({
+              pattern,
+              signal: activeSignal,
+              maxMatches: config.limits.maxSearchMatches,
+            });
+            for (const record of records) {
+              const item = withEvidenceMeta(
+                record,
+                'filesystem.searchText',
+                evidence.length,
+                collectedAt
+              );
+              if (
+                totalBytes + item.retainedBytes >
+                config.limits.maxEvidenceBytes
+              )
+                break;
+              evidence.push(item);
+              totalBytes += item.retainedBytes;
+            }
+          }
+
+          context = await compilePromptContext({
+            request,
+            evidence,
+            instructionFiles,
+            maxChars: config.model.maxPromptChars,
+            signal: activeSignal,
+          });
+
+          review = await provider.complete({
+            systemPrompt: context.systemPrompt,
+            userPrompt: context.userPrompt,
+            responseSchema: context.responseSchema,
+            signal: activeSignal,
+          });
         }
 
-        const context = await compilePromptContext({
-          request,
-          evidence,
-          instructionFiles,
-          maxChars: config.model.maxPromptChars,
-          signal: activeSignal,
-        });
-
-        const review = await provider.complete({
-          systemPrompt: context.systemPrompt,
-          userPrompt: context.userPrompt,
-          responseSchema: context.responseSchema,
-          signal: activeSignal,
-        });
-
+        if (investigate) checkInvestigationAbort(activeSignal);
+        stage = 'validation';
         validateReviewPayload(review);
         verifyEvidenceReferences(
           review,
@@ -162,20 +232,22 @@ export function createReviewOrchestrator({
           context.omittedEvidenceIds
         );
 
+        stage = 'report';
         const reportText = renderReviewReport({
           format,
           review,
-          request,
+          request: investigate ? redactor.redact(request) : request,
           includedEvidenceIds: context.includedEvidenceIds,
           omittedEvidenceIds: context.omittedEvidenceIds,
           runId,
+          investigation,
         });
 
         const manifest = {
           runId,
           createdAt: new Date().toISOString(),
-          rootPath: reviewRoot,
-          request,
+          rootPath: investigate ? redactor.redact(reviewRoot) : reviewRoot,
+          ...(investigate ? { investigation } : { request }),
           status: 'success',
           decision: review.decision,
           schemaVersion: REVIEW_SCHEMA_VERSION,
@@ -183,7 +255,9 @@ export function createReviewOrchestrator({
           evidenceSummary: evidence.map((item) => ({
             id: item.id,
             capability: item.capability,
-            sourcePath: item.sourcePath,
+            sourcePath: investigate
+              ? redactor.redact(item.sourcePath)
+              : item.sourcePath,
             lineRange: item.lineRange,
             retainedBytes: item.retainedBytes,
             originalBytes: item.originalBytes,
@@ -195,20 +269,24 @@ export function createReviewOrchestrator({
         };
 
         const replayBundle = includeReplay
-          ? {
-              runId,
-              request,
-              evidence,
-              trustedInstructions: context.trustedInstructions,
-              maxPromptChars: config.model.maxPromptChars,
-              systemPrompt: context.systemPrompt,
-              userPrompt: context.userPrompt,
-              includedEvidenceIds: context.includedEvidenceIds,
-              omittedEvidenceIds: context.omittedEvidenceIds,
-              review,
-            }
+          ? investigate
+            ? { ...investigationReplayBundle, runId }
+            : {
+                runId,
+                request,
+                evidence,
+                trustedInstructions: context.trustedInstructions,
+                maxPromptChars: config.model.maxPromptChars,
+                systemPrompt: context.systemPrompt,
+                userPrompt: context.userPrompt,
+                includedEvidenceIds: context.includedEvidenceIds,
+                omittedEvidenceIds: context.omittedEvidenceIds,
+                review,
+              }
           : undefined;
 
+        if (investigate) checkInvestigationAbort(activeSignal);
+        stage = 'artifacts';
         const paths = await persistRunArtifacts({
           outputDir: config.review.outputDir,
           reviewedRoot: reviewRoot,
@@ -222,11 +300,49 @@ export function createReviewOrchestrator({
           reportText,
           manifestPath: paths.manifestPath,
           replayPath: paths.replayPath,
+          ...(investigate ? { investigation } : {}),
         };
       } catch (error) {
+        if (investigate) {
+          const code = activeSignal?.aborted
+            ? activeSignal.reason?.code === 'E_INVESTIGATION_TIMEOUT'
+              ? 'E_INVESTIGATION_TIMEOUT'
+              : 'E_ABORTED'
+            : error instanceof HarnessError
+              ? error.code
+              : 'E_INTERNAL';
+          if (error instanceof HarnessError && error.details?.investigation) {
+            throw error;
+          }
+          throw new HarnessError(
+            code,
+            'Investigation ended without completing the review run.',
+            {
+              stage,
+              investigation: {
+                mode: 'investigation',
+                modelCalls: 0,
+                toolCalls: 0,
+                seedCalls: 0,
+                budgetForced: false,
+                limitations: [],
+                collectedEvidenceIds: [],
+                omittedEvidenceIds: [],
+                turns: [],
+                ...investigation,
+                elapsedMs:
+                  startedAt === undefined
+                    ? 0
+                    : Math.max(0, Date.now() - startedAt),
+                stopReason: code,
+              },
+            }
+          );
+        }
         throw asHarnessError(error);
       } finally {
-        scope.done();
+        clearTimeout(deadlineTimer);
+        scope?.done();
         if (acquired) admission.release();
       }
     },

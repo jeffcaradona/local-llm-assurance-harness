@@ -5,6 +5,7 @@ export function renderReviewReport({
   includedEvidenceIds,
   omittedEvidenceIds,
   runId,
+  investigation,
 }) {
   const payload = {
     runId,
@@ -12,6 +13,7 @@ export function renderReviewReport({
     includedEvidenceIds,
     omittedEvidenceIds,
     review,
+    ...(investigation === undefined ? {} : { investigation }),
   };
 
   if (format === 'json') {

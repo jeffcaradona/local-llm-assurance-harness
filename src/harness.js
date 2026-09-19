@@ -54,6 +54,7 @@ export function createHarness({
     provider: reviewProvider,
     admission,
     lifecycle,
+    redactor,
   });
 
   return {

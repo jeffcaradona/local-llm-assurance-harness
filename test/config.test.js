@@ -3,6 +3,59 @@ import assert from 'node:assert/strict';
 import { resolveRuntimeConfig, validateRuntimeConfig } from '../src/config.js';
 import { HarnessError } from '../src/errors.js';
 
+test('investigation budgets default when unset or blank', () => {
+  for (const value of [undefined, '', '  ']) {
+    const config = validateRuntimeConfig(
+      resolveRuntimeConfig({
+        HARNESS_INVESTIGATE_MAX_MODEL_CALLS: value,
+        HARNESS_INVESTIGATE_MAX_TOOL_CALLS: value,
+        HARNESS_INVESTIGATE_TIMEOUT_MS: value,
+      })
+    );
+    assert.deepEqual(config.investigation, {
+      maxModelCalls: 8,
+      maxToolCalls: 6,
+      timeoutMs: 600_000,
+    });
+  }
+});
+
+test('investigation budgets accept inclusive boundaries', () => {
+  for (const [model, tool, timeout] of [
+    [1, 0, 1],
+    [100, 100, 2_147_483_647],
+  ]) {
+    const config = validateRuntimeConfig(
+      resolveRuntimeConfig({
+        HARNESS_INVESTIGATE_MAX_MODEL_CALLS: String(model),
+        HARNESS_INVESTIGATE_MAX_TOOL_CALLS: String(tool),
+        HARNESS_INVESTIGATE_TIMEOUT_MS: String(timeout),
+      })
+    );
+    assert.deepEqual(config.investigation, {
+      maxModelCalls: model,
+      maxToolCalls: tool,
+      timeoutMs: timeout,
+    });
+  }
+});
+
+test('investigation budgets reject invalid values with stable configuration errors', () => {
+  for (const [key, invalid] of [
+    ['HARNESS_INVESTIGATE_MAX_MODEL_CALLS', ['0', '101']],
+    ['HARNESS_INVESTIGATE_MAX_TOOL_CALLS', ['-1', '101']],
+    ['HARNESS_INVESTIGATE_TIMEOUT_MS', ['0', '2147483648']],
+  ]) {
+    for (const value of [...invalid, '-1', '1.5', 'abc', 'Infinity', 'NaN']) {
+      assert.throws(
+        () => validateRuntimeConfig(resolveRuntimeConfig({ [key]: value })),
+        { code: 'E_CONFIG_INVALID' },
+        `${key}=${value}`
+      );
+    }
+  }
+});
+
 test('accepts local model endpoint', () => {
   const config = resolveRuntimeConfig({
     HARNESS_MODEL_BASE_URL: 'http://127.0.0.1:8080/v1',

@@ -3,6 +3,12 @@ import { HarnessError } from './errors.js';
 
 const MB = 1024 * 1024;
 
+export const DEFAULT_INVESTIGATION = Object.freeze({
+  maxModelCalls: 8,
+  maxToolCalls: 6,
+  timeoutMs: 600_000,
+});
+
 export const DEFAULT_LIMITS = Object.freeze({
   maxFiles: 40,
   maxSearchMatches: 200,
@@ -55,11 +61,35 @@ export function resolveRuntimeConfig(env = process.env) {
       outputDir,
       instructionFiles: [],
     },
+    investigation: {
+      maxModelCalls: env.HARNESS_INVESTIGATE_MAX_MODEL_CALLS?.trim()
+        ? Number(env.HARNESS_INVESTIGATE_MAX_MODEL_CALLS)
+        : DEFAULT_INVESTIGATION.maxModelCalls,
+      maxToolCalls: env.HARNESS_INVESTIGATE_MAX_TOOL_CALLS?.trim()
+        ? Number(env.HARNESS_INVESTIGATE_MAX_TOOL_CALLS)
+        : DEFAULT_INVESTIGATION.maxToolCalls,
+      timeoutMs: env.HARNESS_INVESTIGATE_TIMEOUT_MS?.trim()
+        ? Number(env.HARNESS_INVESTIGATE_TIMEOUT_MS)
+        : DEFAULT_INVESTIGATION.timeoutMs,
+    },
     limits: { ...DEFAULT_LIMITS, requestTimeoutMs },
   };
 }
 
 export function validateRuntimeConfig(config) {
+  for (const [key, minimum, maximum] of [
+    ['maxModelCalls', 1, 100],
+    ['maxToolCalls', 0, 100],
+    ['timeoutMs', 1, 2_147_483_647],
+  ]) {
+    const value = config?.investigation?.[key];
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      throw new HarnessError(
+        'E_CONFIG_INVALID',
+        `Investigation ${key} must be an integer between ${minimum} and ${maximum}.`
+      );
+    }
+  }
   if (!config?.model?.baseUrl || !config.model.model) {
     throw new HarnessError(
       'E_CONFIG_INVALID',
