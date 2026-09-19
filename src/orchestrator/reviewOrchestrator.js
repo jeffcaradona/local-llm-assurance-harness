@@ -2,7 +2,10 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { HarnessError, asHarnessError } from '../errors.js';
 import { compilePromptContext } from '../context/compiler.js';
-import { validateReviewPayload, verifyEvidenceReferences } from '../review/validator.js';
+import {
+  validateReviewPayload,
+  verifyEvidenceReferences,
+} from '../review/validator.js';
 import { renderReviewReport } from '../reporting/render.js';
 import { persistRunArtifacts } from '../audit/manifest.js';
 import { REVIEW_SCHEMA_VERSION } from '../review/schema.js';
@@ -22,21 +25,39 @@ function withEvidenceMeta(record, capability, index, collectedAt) {
     retainedBytes: record.retainedBytes,
     originalBytes: record.originalBytes,
     truncated: record.truncated,
-    redaction: record.redaction
+    redaction: record.redaction,
   };
 }
 
 const AUTO_DISCOVERY_SKIPPABLE_CODES = new Set([
   'E_SENSITIVE_PATH_BLOCKED',
   'E_BINARY_FILE_REJECTED',
-  'E_SYMLINK_BLOCKED'
+  'E_SYMLINK_BLOCKED',
 ]);
 
-export function createReviewOrchestrator({ config, capabilities, provider, admission, lifecycle }) {
+export function createReviewOrchestrator({
+  config,
+  capabilities,
+  provider,
+  admission,
+  lifecycle,
+}) {
   return {
-    async review({ rootPath, selectedFiles = [], searches = [], request, format = 'terminal', instructionFiles = [], includeReplay = false, signal }) {
+    async review({
+      rootPath,
+      selectedFiles = [],
+      searches = [],
+      request,
+      format = 'terminal',
+      instructionFiles = [],
+      includeReplay = false,
+      signal,
+    }) {
       if (!request) {
-        throw new HarnessError('E_REVIEW_REQUEST_REQUIRED', 'Review request text is required.');
+        throw new HarnessError(
+          'E_REVIEW_REQUEST_REQUIRED',
+          'Review request text is required.'
+        );
       }
 
       const scope = lifecycle.createRequestScope();
@@ -47,7 +68,9 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         await admission.acquire(signal);
         acquired = true;
         const reviewRoot = resolve(rootPath);
-        const activeSignal = AbortSignal.any([signal, scope.signal].filter(Boolean));
+        const activeSignal = AbortSignal.any(
+          [signal, scope.signal].filter(Boolean)
+        );
         const collectedAt = new Date().toISOString();
         const findFiles = capabilities.get('filesystem.findFiles');
         const readTextFile = capabilities.get('filesystem.readTextFile');
@@ -58,31 +81,60 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
 
         const fileList = selectedFiles.length
           ? [...new Set(selectedFiles)].sort()
-          : await findFiles.invoke({ signal: activeSignal, limit: config.limits.maxFiles });
+          : await findFiles.invoke({
+              signal: activeSignal,
+              limit: config.limits.maxFiles,
+            });
 
         for (const file of fileList) {
           if (totalBytes >= config.limits.maxEvidenceBytes) break;
           let record;
           try {
-            record = await readTextFile.invoke({ path: file, signal: activeSignal, maxBytes: config.limits.maxFileBytes });
+            record = await readTextFile.invoke({
+              path: file,
+              signal: activeSignal,
+              maxBytes: config.limits.maxFileBytes,
+            });
           } catch (error) {
-            if (!explicitFileSelection && AUTO_DISCOVERY_SKIPPABLE_CODES.has(error?.code)) {
+            if (
+              !explicitFileSelection &&
+              AUTO_DISCOVERY_SKIPPABLE_CODES.has(error?.code)
+            ) {
               continue;
             }
             throw error;
           }
-          const item = withEvidenceMeta(record, 'filesystem.readTextFile', evidence.length, collectedAt);
-          if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes) break;
+          const item = withEvidenceMeta(
+            record,
+            'filesystem.readTextFile',
+            evidence.length,
+            collectedAt
+          );
+          if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes)
+            break;
           evidence.push(item);
           totalBytes += item.retainedBytes;
         }
 
         for (const pattern of searches) {
           if (totalBytes >= config.limits.maxEvidenceBytes) break;
-          const records = await searchText.invoke({ pattern, signal: activeSignal, maxMatches: config.limits.maxSearchMatches });
+          const records = await searchText.invoke({
+            pattern,
+            signal: activeSignal,
+            maxMatches: config.limits.maxSearchMatches,
+          });
           for (const record of records) {
-            const item = withEvidenceMeta(record, 'filesystem.searchText', evidence.length, collectedAt);
-            if (totalBytes + item.retainedBytes > config.limits.maxEvidenceBytes) break;
+            const item = withEvidenceMeta(
+              record,
+              'filesystem.searchText',
+              evidence.length,
+              collectedAt
+            );
+            if (
+              totalBytes + item.retainedBytes >
+              config.limits.maxEvidenceBytes
+            )
+              break;
             evidence.push(item);
             totalBytes += item.retainedBytes;
           }
@@ -93,18 +145,22 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
           evidence,
           instructionFiles,
           maxChars: config.model.maxPromptChars,
-          signal: activeSignal
+          signal: activeSignal,
         });
 
         const review = await provider.complete({
           systemPrompt: context.systemPrompt,
           userPrompt: context.userPrompt,
           responseSchema: context.responseSchema,
-          signal: activeSignal
+          signal: activeSignal,
         });
 
         validateReviewPayload(review);
-        verifyEvidenceReferences(review, [...context.includedEvidenceIds, ...context.omittedEvidenceIds]);
+        verifyEvidenceReferences(
+          review,
+          context.includedEvidenceIds,
+          context.omittedEvidenceIds
+        );
 
         const reportText = renderReviewReport({
           format,
@@ -112,7 +168,7 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
           request,
           includedEvidenceIds: context.includedEvidenceIds,
           omittedEvidenceIds: context.omittedEvidenceIds,
-          runId
+          runId,
         });
 
         const manifest = {
@@ -132,20 +188,24 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
             retainedBytes: item.retainedBytes,
             originalBytes: item.originalBytes,
             truncated: item.truncated,
-            redaction: item.redaction
+            redaction: item.redaction,
           })),
           includedEvidenceIds: context.includedEvidenceIds,
-          omittedEvidenceIds: context.omittedEvidenceIds
+          omittedEvidenceIds: context.omittedEvidenceIds,
         };
 
         const replayBundle = includeReplay
           ? {
               runId,
+              request,
+              evidence,
+              trustedInstructions: context.trustedInstructions,
+              maxPromptChars: config.model.maxPromptChars,
               systemPrompt: context.systemPrompt,
               userPrompt: context.userPrompt,
               includedEvidenceIds: context.includedEvidenceIds,
               omittedEvidenceIds: context.omittedEvidenceIds,
-              review
+              review,
             }
           : undefined;
 
@@ -154,14 +214,14 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
           reviewedRoot: reviewRoot,
           runId,
           manifest,
-          replayBundle
+          replayBundle,
         });
 
         return {
           runId,
           reportText,
           manifestPath: paths.manifestPath,
-          replayPath: paths.replayPath
+          replayPath: paths.replayPath,
         };
       } catch (error) {
         throw asHarnessError(error);
@@ -169,6 +229,6 @@ export function createReviewOrchestrator({ config, capabilities, provider, admis
         scope.done();
         if (acquired) admission.release();
       }
-    }
+    },
   };
 }

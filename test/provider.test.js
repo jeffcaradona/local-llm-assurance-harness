@@ -26,9 +26,12 @@ test('provider rejects oversized response body', async () => {
       model: 'm',
       maxPromptChars: 1000,
       timeoutMs: 1000,
-      maxResponseBytes: 100
+      maxResponseBytes: 100,
     });
-    await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), { code: 'E_MODEL_RESPONSE_TOO_LARGE' });
+    await assert.rejects(
+      () => provider.complete({ systemPrompt: 's', userPrompt: 'u' }),
+      { code: 'E_MODEL_RESPONSE_TOO_LARGE' }
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -44,7 +47,23 @@ test('provider parses OpenAI-compatible JSON content', async () => {
     seenBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
-      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ schemaVersion: '1.0.0', summary: 'ok', decision: 'no_findings_in_supplied_evidence', observations: [], inferences: [], findings: [], limitations: { notes: [], omittedEvidenceIds: [] } }) } }] })
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                schemaVersion: '1.0.0',
+                summary: 'ok',
+                decision: 'no_findings_in_supplied_evidence',
+                observations: [],
+                inferences: [],
+                findings: [],
+                limitations: { notes: [], omittedEvidenceIds: [] },
+              }),
+            },
+          },
+        ],
+      })
     );
   });
   try {
@@ -54,16 +73,25 @@ test('provider parses OpenAI-compatible JSON content', async () => {
       model: 'm',
       maxPromptChars: 10_000,
       timeoutMs: 1000,
-      maxResponseBytes: 10_000
+      maxResponseBytes: 10_000,
     });
 
-    const context = await compilePromptContext({ request: 'Review concurrency bounds.', evidence: [], maxChars: 10_000 });
+    const context = await compilePromptContext({
+      request: 'Review concurrency bounds.',
+      evidence: [],
+      maxChars: 10_000,
+    });
     const out = await provider.complete(context);
     validateReviewPayload(out);
     assert.equal(out.summary, 'ok');
     assert.equal(seenPath, '/v1/chat/completions');
     assert.equal(seenBody.response_format.type, 'json_schema');
-    assert.deepEqual(JSON.parse(seenBody.messages[0].content.split('Review response JSON Schema:\n')[1]), modelReviewSchema);
+    assert.deepEqual(
+      JSON.parse(
+        seenBody.messages[0].content.split('Review response JSON Schema:\n')[1]
+      ),
+      modelReviewSchema
+    );
     assert.equal(seenBody.messages[1].content, context.userPrompt);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -73,7 +101,11 @@ test('provider parses OpenAI-compatible JSON content', async () => {
 test('provider rejects a Markdown code fence around model content instead of repairing it', async () => {
   const server = await withServer((_, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{ message: { content: '```json\n{"ok":true}\n```' } }] }));
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { content: '```json\n{"ok":true}\n```' } }],
+      })
+    );
   });
   try {
     const port = server.address().port;
@@ -82,10 +114,13 @@ test('provider rejects a Markdown code fence around model content instead of rep
       model: 'm',
       maxPromptChars: 1000,
       timeoutMs: 1000,
-      maxResponseBytes: 10_000
+      maxResponseBytes: 10_000,
     });
 
-    await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), { code: 'E_MODEL_OUTPUT_NOT_JSON' });
+    await assert.rejects(
+      () => provider.complete({ systemPrompt: 's', userPrompt: 'u' }),
+      { code: 'E_MODEL_OUTPUT_NOT_JSON' }
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -98,7 +133,9 @@ async function captureRequestBody(run) {
     for await (const chunk of req) chunks.push(chunk);
     seenBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }));
+    res.end(
+      JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] })
+    );
   });
   try {
     await run(`http://127.0.0.1:${server.address().port}/v1`);
@@ -117,14 +154,18 @@ test('provider requests schema-constrained output and sends configured temperatu
       timeoutMs: 1000,
       maxResponseBytes: 10_000,
       temperature: 0.2,
-      reasoningEffort: 'none'
+      reasoningEffort: 'none',
     });
-    await provider.complete({ systemPrompt: 's', userPrompt: 'u', responseSchema: modelReviewSchema });
+    await provider.complete({
+      systemPrompt: 's',
+      userPrompt: 'u',
+      responseSchema: modelReviewSchema,
+    });
   });
 
   assert.deepEqual(body.response_format, {
     type: 'json_schema',
-    json_schema: { name: 'review', strict: true, schema: modelReviewSchema }
+    json_schema: { name: 'review', strict: true, schema: modelReviewSchema },
   });
   assert.equal('$id' in body.response_format.json_schema.schema, false);
   assert.equal(body.temperature, 0.2);
@@ -137,8 +178,13 @@ test('provider reports token-limit truncation instead of a JSON parse failure', 
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({
-        choices: [{ finish_reason: 'length', message: { content: '', reasoning: 'x'.repeat(100) } }],
-        usage: { completion_tokens: 8192 }
+        choices: [
+          {
+            finish_reason: 'length',
+            message: { content: '', reasoning: 'x'.repeat(100) },
+          },
+        ],
+        usage: { completion_tokens: 8192 },
       })
     );
   });
@@ -149,12 +195,15 @@ test('provider reports token-limit truncation instead of a JSON parse failure', 
       maxPromptChars: 1000,
       timeoutMs: 1000,
       maxResponseBytes: 10_000,
-      maxTokens: 8192
+      maxTokens: 8192,
     });
-    await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), {
-      code: 'E_MODEL_OUTPUT_TRUNCATED',
-      details: { maxTokens: 8192, completionTokens: 8192, contentChars: 0 }
-    });
+    await assert.rejects(
+      () => provider.complete({ systemPrompt: 's', userPrompt: 'u' }),
+      {
+        code: 'E_MODEL_OUTPUT_TRUNCATED',
+        details: { maxTokens: 8192, completionTokens: 8192, contentChars: 0 },
+      }
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -167,7 +216,7 @@ test('provider falls back to json_object and omits temperature when neither is c
       model: 'm',
       maxPromptChars: 1000,
       timeoutMs: 1000,
-      maxResponseBytes: 10_000
+      maxResponseBytes: 10_000,
     });
     await provider.complete({ systemPrompt: 's', userPrompt: 'u' });
   });

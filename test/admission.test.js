@@ -10,7 +10,9 @@ test('saturates queue and supports queued cancellation', async () => {
   const queued = admission.acquire(queuedAbort.signal);
   await Promise.resolve();
 
-  await assert.rejects(() => admission.acquire(), { code: 'E_ADMISSION_SATURATED' });
+  await assert.rejects(() => admission.acquire(), {
+    code: 'E_ADMISSION_SATURATED',
+  });
 
   queuedAbort.abort();
   await assert.rejects(() => queued, { code: 'E_ABORTED' });

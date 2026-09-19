@@ -8,15 +8,24 @@ const validate = ajv.compile(reviewSchema);
 export function validateReviewPayload(payload) {
   const ok = validate(payload);
   if (!ok) {
-    throw new HarnessError('E_REVIEW_SCHEMA_INVALID', 'Model response did not match review schema.', {
-      errors: validate.errors
-    });
+    throw new HarnessError(
+      'E_REVIEW_SCHEMA_INVALID',
+      'Model response did not match review schema.',
+      {
+        errors: validate.errors,
+      }
+    );
   }
   return payload;
 }
 
-export function verifyEvidenceReferences(review, suppliedEvidenceIds) {
+export function verifyEvidenceReferences(
+  review,
+  suppliedEvidenceIds,
+  omittedEvidenceIds = []
+) {
   const known = new Set(suppliedEvidenceIds);
+  const omitted = new Set(omittedEvidenceIds);
   const unknown = [];
 
   for (const finding of review.findings) {
@@ -26,12 +35,16 @@ export function verifyEvidenceReferences(review, suppliedEvidenceIds) {
   }
 
   for (const id of review.limitations.omittedEvidenceIds) {
-    if (!known.has(id)) unknown.push(id);
+    if (!omitted.has(id)) unknown.push(id);
   }
 
   if (unknown.length) {
-    throw new HarnessError('E_UNKNOWN_EVIDENCE_REFERENCE', 'Model referenced evidence not supplied in context.', {
-      unknown: [...new Set(unknown)].sort()
-    });
+    throw new HarnessError(
+      'E_UNKNOWN_EVIDENCE_REFERENCE',
+      'Model referenced evidence not supplied in context.',
+      {
+        unknown: [...new Set(unknown)].sort(),
+      }
+    );
   }
 }

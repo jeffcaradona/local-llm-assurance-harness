@@ -4,6 +4,7 @@
 
   Location: docs\artifacts\reviews\code-review-2026-09-12.md s
 -->
+
 # Code Review — Initial Copilot Agent Milestone
 
 - **Date:** 2026-09-12
@@ -14,7 +15,7 @@
 
 A genuinely decent first milestone. The architecture matches the prompt (composition root, explicit dependency injection, capability registry, deterministic functional core), the security-sensitive spots show real care (TOCTOU inode check, bounded HTTP body reads before parsing, redirect rejection, local-endpoint gate, strict Ajv schema), and the test suite is real, not decorative.
 
-However, the project **fails two of the prompt's explicit acceptance criteria out of the box**, and several of the prompt's security requirements are implemented in a way that *looks* right but doesn't actually hold. That pattern — plausible shape, hollow enforcement — is the characteristic failure mode of agent-generated code, and it appears five times here (findings 1–5).
+However, the project **fails two of the prompt's explicit acceptance criteria out of the box**, and several of the prompt's security requirements are implemented in a way that _looks_ right but doesn't actually hold. That pattern — plausible shape, hollow enforcement — is the characteristic failure mode of agent-generated code, and it appears five times here (findings 1–5).
 
 **Recommended priority:** fix findings 1–5 first, then 6 and the missing redaction/shutdown tests. Everything else can ride along in normal cleanup.
 
@@ -36,7 +37,7 @@ The prompt's acceptance criteria begin with "Help and example commands work." Ev
 
 ### 2. Unhandled rejection crashes the process with a raw stack trace
 
-`src/filesystem/collector.js:18` eagerly starts `realpath(resolve(rootPath))` at construction time. If the review fails before anything awaits that promise — e.g. `review --root /nonexistent` with no `--request` — the structured error prints, and *then* Node crashes on the orphaned rejection. Reproduced directly.
+`src/filesystem/collector.js:18` eagerly starts `realpath(resolve(rootPath))` at construction time. If the review fails before anything awaits that promise — e.g. `review --root /nonexistent` with no `--request` — the structured error prints, and _then_ Node crashes on the orphaned rejection. Reproduced directly.
 
 This is exactly the "detached promise" the prompt forbade, created in the composition path.
 
@@ -44,7 +45,7 @@ This is exactly the "detached promise" the prompt forbade, created in the compos
 
 ### 3. Findings can cite evidence the model never saw
 
-`src/orchestrator/reviewOrchestrator.js:106` verifies model references against `[...includedEvidenceIds, ...omittedEvidenceIds]`. Omitted evidence was, by definition, *not* in the prompt — yet a finding citing an omitted ID passes verification (confirmed with a direct call to `verifyEvidenceReferences`).
+`src/orchestrator/reviewOrchestrator.js:106` verifies model references against `[...includedEvidenceIds, ...omittedEvidenceIds]`. Omitted evidence was, by definition, _not_ in the prompt — yet a finding citing an omitted ID passes verification (confirmed with a direct call to `verifyEvidenceReferences`).
 
 The prompt is explicit: "Validate every reference against evidence supplied to the model — not merely evidence collected earlier." This undermines the project's central provenance claim.
 
@@ -60,7 +61,7 @@ The prompt required restricting inherited environment variables, and `docs/threa
 
 ### 5. Windows drive-letter paths defeat both containment checks — in opposite directions
 
-All three containment helpers (`src/filesystem/collector.js:13`, `src/capabilities/registry.js:30`, `src/audit/manifest.js:27`) only test for `..` prefixes. On Windows, `path.relative('C:\\repo', 'D:\\evil')` returns an *absolute* path that doesn't start with `..`, so:
+All three containment helpers (`src/filesystem/collector.js:13`, `src/capabilities/registry.js:30`, `src/audit/manifest.js:27`) only test for `..` prefixes. On Windows, `path.relative('C:\\repo', 'D:\\evil')` returns an _absolute_ path that doesn't start with `..`, so:
 
 - `registry.js` / `collector.js`: a path on another drive **passes** containment (escape not caught).
 - `manifest.js`: an output directory on another drive is **wrongly rejected** as "inside the repo".
@@ -97,7 +98,7 @@ The prompt requires "deterministic prompt compilation" during replay. The bundle
 
 ### 10. Subprocess termination is fire-and-forget
 
-On timeout/abort, `src/subprocess/runner.js` sends one SIGTERM, rejects immediately, and `removeAllListeners()` discards the `close` handler — so a child that ignores SIGTERM leaks silently and its exit is never observed. There is no SIGKILL escalation and no wait-for-exit after kill. The README documents the *descendants* limitation honestly, but not this one.
+On timeout/abort, `src/subprocess/runner.js` sends one SIGTERM, rejects immediately, and `removeAllListeners()` discards the `close` handler — so a child that ignores SIGTERM leaks silently and its exit is never observed. There is no SIGKILL escalation and no wait-for-exit after kill. The README documents the _descendants_ limitation honestly, but not this one.
 
 **Fix:** keep a `close` listener alive after kill, escalate to SIGKILL after a short grace period, and document the actual guarantee.
 
@@ -152,7 +153,7 @@ Search relies on the 2 MB stdout cap; a cap hit mid-line makes `JSON.parse` fail
 Worth stating explicitly, since it shapes how much to trust the rest:
 
 - Device/inode TOCTOU check across the open/read boundary in `readBoundedText`.
-- HTTP response body bounded *while reading*, before `JSON.parse`.
+- HTTP response body bounded _while reading_, before `JSON.parse`.
 - `redirect: 'manual'` plus the non-local-endpoint opt-in gate.
 - `response_format` requested but never trusted — local Ajv validation with `additionalProperties: false` and a `const` schema version.
 - Metadata-only manifests with evidence content stripped.
@@ -165,9 +166,9 @@ Worth stating explicitly, since it shapes how much to trust the rest:
 
 ## Suggested fix order
 
-| Priority | Findings | Rationale |
-|---|---|---|
-| 1 | 1, 2 | Break the prompt's acceptance criteria on first contact. |
-| 2 | 3, 4, 5 | The gap between the security story the docs tell and what the code enforces. |
-| 3 | 6, plus redaction/shutdown tests | Guard the claims the project exists to make. |
-| 4 | 7–12, minors | Normal cleanup. |
+| Priority | Findings                         | Rationale                                                                    |
+| -------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| 1        | 1, 2                             | Break the prompt's acceptance criteria on first contact.                     |
+| 2        | 3, 4, 5                          | The gap between the security story the docs tell and what the code enforces. |
+| 3        | 6, plus redaction/shutdown tests | Guard the claims the project exists to make.                                 |
+| 4        | 7–12, minors                     | Normal cleanup.                                                              |

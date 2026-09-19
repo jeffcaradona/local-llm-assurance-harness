@@ -15,11 +15,14 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
         timeoutMs = 15_000,
         stdoutMaxBytes = 2 * 1024 * 1024,
         stderrMaxBytes = 256 * 1024,
-        env = {}
+        env = {},
       } = options;
 
       if (signal?.aborted) {
-        throw new HarnessError('E_ABORTED', 'Operation aborted before subprocess start.');
+        throw new HarnessError(
+          'E_ABORTED',
+          'Operation aborted before subprocess start.'
+        );
       }
 
       return new Promise((resolve, reject) => {
@@ -29,11 +32,16 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
         let stdoutTruncated = false;
         let stderrTruncated = false;
 
+        const baseEnv = Object.fromEntries(
+          ['PATH', 'Path', 'SystemRoot', 'ComSpec', 'PATHEXT']
+            .filter((key) => process.env[key] !== undefined)
+            .map((key) => [key, process.env[key]])
+        );
         const child = spawn(command, args, {
           cwd,
           shell: false,
-          env: { ...process.env, ...env },
-          stdio: ['ignore', 'pipe', 'pipe']
+          env: { ...baseEnv, ...env },
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
 
         const settle = (fn, value) => {
@@ -62,26 +70,49 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
 
         const timer = setTimeout(() => {
           stop();
-          settle(reject, new HarnessError('E_SUBPROCESS_TIMEOUT', 'Subprocess timeout exceeded.', { command }));
+          settle(
+            reject,
+            new HarnessError(
+              'E_SUBPROCESS_TIMEOUT',
+              'Subprocess timeout exceeded.',
+              { command }
+            )
+          );
         }, timeoutMs);
 
         child.on('error', (error) => {
           if (error.code === 'ENOENT') {
-            settle(reject, new HarnessError('E_EXECUTABLE_NOT_FOUND', 'Required executable is unavailable.', { command }));
+            settle(
+              reject,
+              new HarnessError(
+                'E_EXECUTABLE_NOT_FOUND',
+                'Required executable is unavailable.',
+                { command }
+              )
+            );
             return;
           }
-          settle(reject, new HarnessError('E_SUBPROCESS_SPAWN', 'Subprocess failed to start.', { command, cause: error.message }));
+          settle(
+            reject,
+            new HarnessError(
+              'E_SUBPROCESS_SPAWN',
+              'Subprocess failed to start.',
+              { command, cause: error.message }
+            )
+          );
         });
 
         child.stdout?.on('data', (chunk) => {
           const next = limitBuffer(stdout, chunk, stdoutMaxBytes);
-          if (next.length < stdout.length + chunk.length) stdoutTruncated = true;
+          if (next.length < stdout.length + chunk.length)
+            stdoutTruncated = true;
           stdout = next;
         });
 
         child.stderr?.on('data', (chunk) => {
           const next = limitBuffer(stderr, chunk, stderrMaxBytes);
-          if (next.length < stderr.length + chunk.length) stderrTruncated = true;
+          if (next.length < stderr.length + chunk.length)
+            stderrTruncated = true;
           stderr = next;
         });
 
@@ -92,12 +123,12 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
             stdout: stdout.toString('utf8'),
             stderr: stderr.toString('utf8'),
             stdoutTruncated,
-            stderrTruncated
+            stderrTruncated,
           });
         });
 
         signal?.addEventListener('abort', onAbort, { once: true });
       });
-    }
+    },
   };
 }

@@ -2,7 +2,11 @@ export function createRedactor({ secrets = [], patterns = [] } = {}) {
   const normalized = secrets.filter(Boolean);
   const fieldPatterns = patterns.length
     ? patterns
-    : [/(authorization\s*:\s*)([^\s]+)/gi, /(password\s*[=:]\s*)([^\s]+)/gi, /(token\s*[=:]\s*)([^\s]+)/gi];
+    : [
+        /(authorization\s*:\s*)([^\s]+)/gi,
+        /(password\s*[=:]\s*)([^\s]+)/gi,
+        /(token\s*[=:]\s*)([^\s]+)/gi,
+      ];
 
   return {
     redact(input) {
@@ -19,8 +23,8 @@ export function createRedactor({ secrets = [], patterns = [] } = {}) {
       return {
         explicitSecrets: normalized.length,
         patternCount: fieldPatterns.length,
-        note: 'Pattern redaction reduces exposure but does not guarantee complete secret removal.'
+        note: 'Pattern redaction reduces exposure but does not guarantee complete secret removal.',
       };
-    }
+    },
   };
 }

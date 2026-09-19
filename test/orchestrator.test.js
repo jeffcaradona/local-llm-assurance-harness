@@ -9,12 +9,17 @@ import { createLifecycleManager } from '../src/lifecycle/manager.js';
 import { REVIEW_SCHEMA_VERSION } from '../src/review/schema.js';
 import { createReplayOrchestrator } from '../src/orchestrator/replay.js';
 import { HarnessError } from '../src/errors.js';
+import { compilePromptContext } from '../src/context/compiler.js';
 
 test('review orchestration persists sanitized manifest and replay', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'harness-repo-'));
   const out = await mkdtemp(join(tmpdir(), 'harness-out-'));
   const admission = createAdmissionController({ maxActive: 1, maxQueued: 1 });
-  const lifecycle = createLifecycleManager({ admission, shutdownGraceMs: 10, shutdownDeadlineMs: 30 });
+  const lifecycle = createLifecycleManager({
+    admission,
+    shutdownGraceMs: 10,
+    shutdownDeadlineMs: 30,
+  });
 
   const collectorRecord = {
     relativePath: 'src/a.js',
@@ -24,16 +29,18 @@ test('review orchestration persists sanitized manifest and replay', async () => 
     retainedBytes: 20,
     originalBytes: 20,
     truncated: false,
-    redaction: { explicitSecrets: 1 }
+    redaction: { explicitSecrets: 1 },
   };
 
   const capabilities = {
     get(name) {
-      if (name === 'filesystem.findFiles') return { invoke: async () => ['src/a.js'] };
-      if (name === 'filesystem.readTextFile') return { invoke: async () => collectorRecord };
+      if (name === 'filesystem.findFiles')
+        return { invoke: async () => ['src/a.js'] };
+      if (name === 'filesystem.readTextFile')
+        return { invoke: async () => collectorRecord };
       if (name === 'filesystem.searchText') return { invoke: async () => [] };
       throw new Error(`Unknown capability: ${name}`);
-    }
+    },
   };
 
   const reviewPayload = {
@@ -43,20 +50,33 @@ test('review orchestration persists sanitized manifest and replay', async () => 
     observations: [],
     inferences: [],
     findings: [],
-    limitations: { notes: [], omittedEvidenceIds: [] }
+    limitations: { notes: [], omittedEvidenceIds: [] },
   };
 
   const provider = { complete: async () => reviewPayload };
 
   const orchestrator = createReviewOrchestrator({
-    config: { model: { maxPromptChars: 10_000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
+    config: {
+      model: { maxPromptChars: 10_000 },
+      review: { outputDir: out },
+      limits: {
+        maxFiles: 10,
+        maxEvidenceBytes: 1000,
+        maxFileBytes: 1000,
+        maxSearchMatches: 10,
+      },
+    },
     capabilities,
     provider,
     admission,
-    lifecycle
+    lifecycle,
   });
 
-  const result = await orchestrator.review({ rootPath: repo, request: 'r', includeReplay: true });
+  const result = await orchestrator.review({
+    rootPath: repo,
+    request: 'r',
+    includeReplay: true,
+  });
   assert.match(result.reportText, /Decision:/);
 
   const manifest = JSON.parse(await readFile(result.manifestPath, 'utf8'));
@@ -71,12 +91,31 @@ test('review orchestration persists sanitized manifest and replay', async () => 
 test('replay validates without external dependencies', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'harness-replay-'));
   const bundle = join(dir, 'bundle.json');
+  const evidence = [
+    {
+      id: 'ev-0001',
+      sourcePath: 'src/a.js',
+      lineRange: [1, 1],
+      content: 'const a = 1;',
+    },
+  ];
+  const context = await compilePromptContext({
+    request: 'Offline review',
+    evidence,
+    instructionFiles: [],
+    maxChars: 10_000,
+  });
   await writeFile(
     bundle,
     JSON.stringify({
       runId: 'r1',
+      request: 'Offline review',
+      evidence,
+      maxPromptChars: 10_000,
+      systemPrompt: context.systemPrompt,
+      userPrompt: context.userPrompt,
       includedEvidenceIds: ['ev-0001'],
-      omittedEvidenceIds: ['ev-0002'],
+      omittedEvidenceIds: [],
       review: {
         schemaVersion: REVIEW_SCHEMA_VERSION,
         summary: 'offline',
@@ -84,12 +123,15 @@ test('replay validates without external dependencies', async () => {
         observations: [],
         inferences: [],
         findings: [],
-        limitations: { notes: [], omittedEvidenceIds: ['ev-0002'] }
-      }
+        limitations: { notes: [], omittedEvidenceIds: [] },
+      },
     })
   );
 
-  const output = await createReplayOrchestrator().replay({ bundlePath: bundle, format: 'terminal' });
+  const output = await createReplayOrchestrator().replay({
+    bundlePath: bundle,
+    format: 'terminal',
+  });
   assert.match(output, /offline/);
 });
 
@@ -97,11 +139,16 @@ test('auto discovery skips blocked files but explicit file selection fails', asy
   const repo = await mkdtemp(join(tmpdir(), 'harness-repo-'));
   const out = await mkdtemp(join(tmpdir(), 'harness-out-'));
   const admission = createAdmissionController({ maxActive: 1, maxQueued: 1 });
-  const lifecycle = createLifecycleManager({ admission, shutdownGraceMs: 10, shutdownDeadlineMs: 30 });
+  const lifecycle = createLifecycleManager({
+    admission,
+    shutdownGraceMs: 10,
+    shutdownDeadlineMs: 30,
+  });
 
   const capabilities = {
     get(name) {
-      if (name === 'filesystem.findFiles') return { invoke: async () => ['.env', 'src/a.js'] };
+      if (name === 'filesystem.findFiles')
+        return { invoke: async () => ['.env', 'src/a.js'] };
       if (name === 'filesystem.readTextFile') {
         return {
           invoke: async ({ path }) => {
@@ -116,14 +163,14 @@ test('auto discovery skips blocked files but explicit file selection fails', asy
               retainedBytes: 12,
               originalBytes: 12,
               truncated: false,
-              redaction: {}
+              redaction: {},
             };
-          }
+          },
         };
       }
       if (name === 'filesystem.searchText') return { invoke: async () => [] };
       throw new Error(`Unknown capability: ${name}`);
-    }
+    },
   };
 
   const reviewPayload = {
@@ -133,22 +180,39 @@ test('auto discovery skips blocked files but explicit file selection fails', asy
     observations: [],
     inferences: [],
     findings: [],
-    limitations: { notes: [], omittedEvidenceIds: [] }
+    limitations: { notes: [], omittedEvidenceIds: [] },
   };
 
   const orchestrator = createReviewOrchestrator({
-    config: { model: { maxPromptChars: 10_000 }, review: { outputDir: out }, limits: { maxFiles: 10, maxEvidenceBytes: 1000, maxFileBytes: 1000, maxSearchMatches: 10 } },
+    config: {
+      model: { maxPromptChars: 10_000 },
+      review: { outputDir: out },
+      limits: {
+        maxFiles: 10,
+        maxEvidenceBytes: 1000,
+        maxFileBytes: 1000,
+        maxSearchMatches: 10,
+      },
+    },
     capabilities,
     provider: { complete: async () => reviewPayload },
     admission,
-    lifecycle
+    lifecycle,
   });
 
-  const autoResult = await orchestrator.review({ rootPath: repo, request: 'r' });
+  const autoResult = await orchestrator.review({
+    rootPath: repo,
+    request: 'r',
+  });
   assert.match(autoResult.reportText, /Decision:/);
 
   await assert.rejects(
-    () => orchestrator.review({ rootPath: repo, request: 'r', selectedFiles: ['.env'] }),
+    () =>
+      orchestrator.review({
+        rootPath: repo,
+        request: 'r',
+        selectedFiles: ['.env'],
+      }),
     { code: 'E_SENSITIVE_PATH_BLOCKED' }
   );
 });

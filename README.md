@@ -36,11 +36,27 @@ Use environment variables (see `.env.example`):
 - `HARNESS_MODEL_API_KEY` (optional)
 - `HARNESS_ALLOW_NON_LOCAL_ENDPOINT` (`true` required for non-local hosts)
 - `HARNESS_OUTPUT_DIR` (must resolve outside reviewed root)
-- `HARNESS_MODEL_MAX_TOKENS` (optional)
+- `HARNESS_MODEL_MAX_TOKENS` (optional positive integer; limits generated response tokens, not the model context window; blank values are treated as unset)
 - `HARNESS_MODEL_TEMPERATURE` (default `0.2`; must be between 0 and 2)
 - `HARNESS_MODEL_REASONING_EFFORT` (optional: `none`, `low`, `medium`, or `high`; sent as `reasoning_effort`. Hidden reasoning counts against `HARNESS_MODEL_MAX_TOKENS`, so thinking models can exhaust the budget before emitting the review and fail with `E_MODEL_OUTPUT_TRUNCATED`; `none` disables thinking on Ollama)
 - `HARNESS_MODEL_TIMEOUT_MS` (default `180000`, or 3 minutes; covers cold model loading and response generation; increase for slower models)
 - `HARNESS_REDACT_SECRET_1`, `HARNESS_REDACT_SECRET_2` (optional explicit redactions)
+
+### Context length and response tokens
+
+The context length reported by a model runtime is the total token capacity available to the request (input plus generated output). It is not a value that should be copied directly into `HARNESS_MODEL_MAX_TOKENS`. The harness bounds its input separately with an 80,000-character prompt budget; this is deliberately a character limit because the harness does not run the model's tokenizer.
+
+`HARNESS_MODEL_MAX_TOKENS`, when set, is sent to the OpenAI-compatible endpoint as `max_tokens` and caps only the generated review. When it is blank, the field is omitted and the endpoint chooses its default. For example, a model reporting a 262,144-token context window has ample room for the harness's default prompt budget, but that output does not state the endpoint's default or maximum generation length.
+
+A practical starting point for a structured review is:
+
+```dotenv
+HARNESS_MODEL_BASE_URL=http://127.0.0.1:11434/v1
+HARNESS_MODEL_ID=gemma4:26b
+HARNESS_MODEL_MAX_TOKENS=8192
+```
+
+Increase the response cap if reviews are truncated, or reduce it if latency is more important. The endpoint must support the OpenAI-compatible `max_tokens` field, and input plus output must remain within its configured context window.
 
 ## Commands
 
@@ -63,7 +79,7 @@ When no `--file` is provided:
 
 Optional `--search` terms are executed with:
 
-- `rg --json --fixed-strings --color never -- <pattern> <root>`
+- `rg --json --fixed-strings --hidden --glob '!.git/**' --glob '!node_modules/**' --max-count <limit> --max-filesize <limit> --color never -- <pattern> <root>`
 
 Policy and limits:
 
@@ -78,7 +94,7 @@ Policy and limits:
 ## Output and replay
 
 - Manifest: metadata-only sanitized artifact (`<run-id>.manifest.json`), written only for successful runs. Failed runs report their error on stderr and leave no manifest.
-- Replay bundle: optional (`--replay`) sanitized inputs needed for deterministic offline replay.
+- Replay bundle: optional (`--replay`) redacted evidence and inputs needed to recompile and verify prompt context during deterministic offline replay. Unlike the metadata-only manifest, it contains repository excerpts; protect it accordingly.
 - Artifacts are written to an explicit output directory outside the reviewed repository root.
 
 ## Exit/error behavior
