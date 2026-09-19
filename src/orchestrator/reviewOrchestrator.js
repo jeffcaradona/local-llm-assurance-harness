@@ -57,6 +57,7 @@ export function createReviewOrchestrator({
   lifecycle,
   redactor = createRedactor(),
   persistArtifacts = persistRunArtifacts,
+  statRoot = stat,
 }) {
   return {
     async review({
@@ -121,7 +122,9 @@ export function createReviewOrchestrator({
           checkInvestigationAbort(activeSignal);
           let validRoot = false;
           try {
-            validRoot = (await stat(reviewRoot)).isDirectory();
+            validRoot = (
+              await cancellable(() => statRoot(reviewRoot), activeSignal)
+            ).isDirectory();
           } catch {
             // Filesystem errors may disclose the private repository path.
           }

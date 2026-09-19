@@ -139,6 +139,73 @@ test('a failed publication removes only files created by this run', async (t) =>
 });
 
 for (const code of ['E_ABORTED', 'E_INVESTIGATION_TIMEOUT']) {
+  test(`orchestration releases admission during stalled root validation on ${code}`, async (t) => {
+    const inputs = await fixture(t);
+    const entered = deferred();
+    const release = deferred();
+    const admission = createAdmissionController({ maxActive: 1, maxQueued: 1 });
+    const lifecycle = createLifecycleManager({
+      admission,
+      shutdownGraceMs: 1,
+      shutdownDeadlineMs: 2,
+    });
+    const config = resolveRuntimeConfig({});
+    config.review.outputDir = inputs.outputDir;
+    if (code === 'E_INVESTIGATION_TIMEOUT') {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      config.investigation.timeoutMs = 100;
+    }
+    const controller = new AbortController();
+    let modelCalls = 0;
+    let toolCalls = 0;
+    let persistenceCalls = 0;
+    const orchestrator = createReviewOrchestrator({
+      config,
+      admission,
+      lifecycle,
+      async statRoot() {
+        entered.resolve();
+        await release.promise;
+        return { isDirectory: () => true };
+      },
+      capabilities: {
+        get() {
+          toolCalls += 1;
+        },
+      },
+      provider: {
+        complete() {
+          modelCalls += 1;
+        },
+      },
+      persistArtifacts() {
+        persistenceCalls += 1;
+      },
+    });
+    const pending = orchestrator.review({
+      rootPath: inputs.reviewedRoot,
+      request: 'Review repository',
+      investigate: true,
+      signal: controller.signal,
+    });
+    await entered.promise;
+    assert.equal(admission.stats().active, 1);
+    if (code === 'E_INVESTIGATION_TIMEOUT') t.mock.timers.tick(100);
+    else controller.abort();
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.code, code);
+      assert.equal(error.details.stage, 'root');
+      assert.equal(error.details.investigation.modelCalls, 0);
+      return true;
+    });
+    assert.equal(admission.stats().active, 0);
+    release.resolve();
+    await new Promise((done) => setImmediate(done));
+    assert.equal(modelCalls, 0);
+    assert.equal(toolCalls, 0);
+    assert.equal(persistenceCalls, 0);
+  });
+
   test(`orchestration releases admission during blocked persistence on ${code}`, async (t) => {
     const inputs = await fixture(t);
     const blocked = blockedFilesystem('writeFile', 'manifest.json');

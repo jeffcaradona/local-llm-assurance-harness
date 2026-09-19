@@ -45,6 +45,8 @@ export function sanitizeInvestigationValue(value, redactor) {
   return value;
 }
 
+export { cancellable };
+
 function boundText(text, maxBytes) {
   let bounded = Buffer.from(text).subarray(0, maxBytes).toString('utf8');
   while (Buffer.byteLength(bounded) > maxBytes) bounded = bounded.slice(0, -1);
