@@ -6,7 +6,7 @@ The concurrency review command failed with `E_REVIEW_SCHEMA_INVALID` because the
 
 1. `src/orchestrator/reviewOrchestrator.js` collects repository evidence and asks the context compiler to prepare the model messages.
 2. `src/context/compiler.js` builds a system message (review rules) and a user message (the request and evidence).
-3. `src/model/openaiCompatibleProvider.js` sends those messages with `response_format: { type: 'json_object' }`, then parses the returned text as JSON. That request option contains no review field definitions.
+3. `src/model/openaiCompatibleProvider.js` sends those messages with `response_format: { type: 'json_schema', json_schema: { name: 'review', strict: true, schema } }`, then parses the returned text as JSON. Servers that support structured outputs (Ollama included) use the schema to constrain decoding. Before the fixes below, the provider sent `{ type: 'json_object' }`, which only guarantees JSON syntax and carries no review field definitions.
 4. `src/review/validator.js` uses Ajv to check the parsed object against `src/review/schema.js`. A schema is a contract describing required fields, types, allowed values, and whether extra fields are permitted.
 5. Only after validation and evidence-reference checks does the orchestrator render the report and persist artifacts. `--format json` controls report rendering; it does not supply the model's review contract.
 
@@ -37,18 +37,28 @@ This illustrates the structure, not a conclusion about your repository. Actual f
 
 ## What changed and why
 
-The context compiler now imports and serializes the same `reviewSchema` used by the validator into the system prompt. This gives the model the complete contract, including nested finding fields and allowed decision values. Sharing the schema avoids maintaining a separate prompt description that could drift from validation.
+The context compiler now serializes `modelReviewSchema` into the system prompt. It is derived from the same `reviewSchema` the validator uses, minus the schema-level `$id`, so the model receives the complete contract, including nested finding fields and allowed decision values. Deriving it avoids maintaining a separate prompt description that could drift from validation.
 
 The prompt explicitly asks for one JSON object without Markdown fences or extra properties. It also allows empty arrays when there are no supported entries, so satisfying the structure does not require inventing findings.
 
-The compiler counts the schema and message text toward the existing character budget before adding evidence. Evidence is still sorted and omitted deterministically when it does not fit. If the schema, instructions, request, and empty-evidence message cannot fit, compilation fails before contacting the model. The smaller test budgets were adjusted to accommodate this newly required content; production limits are unchanged.
+The compiler counts the schema and message text toward the existing character budget before adding evidence. Evidence is still sorted and omitted deterministically when it does not fit. If the schema, instructions, request, and empty-evidence message cannot fit, compilation fails before contacting the model. The smaller test budgets were adjusted to accommodate this newly required content. Separately, the production `maxPromptChars` limit was lowered from 240,000 to 80,000 characters so that the prompt (roughly 22–23k tokens) plus the output budget fits a 32k-token local context window.
 
-The provider continues to send its existing JSON-object option. This fix does not introduce a dependency on server-side schema enforcement. Local schema and evidence validation remain necessary: giving a model instructions does not guarantee it will follow them. The harness does not silently rename `concurrency_bounds`, fill missing fields with invented defaults, or retry automatically.
+## Follow-up: the model echoed `$id`
+
+With the schema in the prompt but only `json_object` enforcement, a local model returned a review that included the schema's own `$id` key. Validation failed with a single `additionalProperties` error at an empty `instancePath`, naming `$id` as the extra property. The model had partly copied the schema instead of producing an instance of it.
+
+Two changes address this:
+
+- The prompt and request carry `modelReviewSchema`, which has no `$id`, so there is no schema metadata to copy.
+- The provider sends the schema as a `json_schema` response format, so a supporting server cannot emit properties the schema forbids.
+
+Server-side enforcement is now the primary guard against shape errors, but the harness does not depend on it. OpenAI-compatible servers vary, and some ignore `json_schema`. Local Ajv validation and evidence-reference checks still run on every response. The harness does not silently rename `concurrency_bounds`, strip Markdown fences, fill missing fields with invented defaults, or retry automatically.
 
 ## Verification
 
 - Context tests check that the full schema appears even with no evidence, that exact budget boundaries hold, and that evidence selection stays deterministic and bounded.
 - A local HTTP test checks the actual outgoing messages and parses and validates a fixture response. It does not claim to test a real model's instruction following.
+- Provider tests check the exact `json_schema` request body, that the sent schema has no `$id`, and that fenced output is rejected rather than repaired.
 - A regression test confirms that `{"concurrency_bounds": []}` still fails strict validation.
 
 Run `npm test`, then retry the original review command against your configured model. A model can still produce an invalid response; this change fixes the missing contract in the prompt, rather than guaranteeing model compliance.

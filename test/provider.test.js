@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createOpenAICompatibleProvider } from '../src/model/openaiCompatibleProvider.js';
 import { compilePromptContext } from '../src/context/compiler.js';
-import { reviewSchema } from '../src/review/schema.js';
+import { modelReviewSchema } from '../src/review/schema.js';
 import { validateReviewPayload } from '../src/review/validator.js';
 
 function withServer(handler) {
@@ -62,10 +62,117 @@ test('provider parses OpenAI-compatible JSON content', async () => {
     validateReviewPayload(out);
     assert.equal(out.summary, 'ok');
     assert.equal(seenPath, '/v1/chat/completions');
-    assert.deepEqual(seenBody.response_format, { type: 'json_object' });
-    assert.deepEqual(JSON.parse(seenBody.messages[0].content.split('Review response JSON Schema:\n')[1]), reviewSchema);
+    assert.equal(seenBody.response_format.type, 'json_schema');
+    assert.deepEqual(JSON.parse(seenBody.messages[0].content.split('Review response JSON Schema:\n')[1]), modelReviewSchema);
     assert.equal(seenBody.messages[1].content, context.userPrompt);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('provider rejects a Markdown code fence around model content instead of repairing it', async () => {
+  const server = await withServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: '```json\n{"ok":true}\n```' } }] }));
+  });
+  try {
+    const port = server.address().port;
+    const provider = createOpenAICompatibleProvider({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      model: 'm',
+      maxPromptChars: 1000,
+      timeoutMs: 1000,
+      maxResponseBytes: 10_000
+    });
+
+    await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), { code: 'E_MODEL_OUTPUT_NOT_JSON' });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+async function captureRequestBody(run) {
+  let seenBody;
+  const server = await withServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    seenBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }));
+  });
+  try {
+    await run(`http://127.0.0.1:${server.address().port}/v1`);
+    return seenBody;
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+test('provider requests schema-constrained output and sends configured temperature', async () => {
+  const body = await captureRequestBody(async (baseUrl) => {
+    const provider = createOpenAICompatibleProvider({
+      baseUrl,
+      model: 'm',
+      maxPromptChars: 1000,
+      timeoutMs: 1000,
+      maxResponseBytes: 10_000,
+      temperature: 0.2,
+      reasoningEffort: 'none'
+    });
+    await provider.complete({ systemPrompt: 's', userPrompt: 'u', responseSchema: modelReviewSchema });
+  });
+
+  assert.deepEqual(body.response_format, {
+    type: 'json_schema',
+    json_schema: { name: 'review', strict: true, schema: modelReviewSchema }
+  });
+  assert.equal('$id' in body.response_format.json_schema.schema, false);
+  assert.equal(body.temperature, 0.2);
+  assert.equal(body.reasoning_effort, 'none');
+});
+
+test('provider reports token-limit truncation instead of a JSON parse failure', async () => {
+  // Thinking models can spend the whole max_tokens budget on hidden reasoning and return empty content.
+  const server = await withServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        choices: [{ finish_reason: 'length', message: { content: '', reasoning: 'x'.repeat(100) } }],
+        usage: { completion_tokens: 8192 }
+      })
+    );
+  });
+  try {
+    const provider = createOpenAICompatibleProvider({
+      baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+      model: 'm',
+      maxPromptChars: 1000,
+      timeoutMs: 1000,
+      maxResponseBytes: 10_000,
+      maxTokens: 8192
+    });
+    await assert.rejects(() => provider.complete({ systemPrompt: 's', userPrompt: 'u' }), {
+      code: 'E_MODEL_OUTPUT_TRUNCATED',
+      details: { maxTokens: 8192, completionTokens: 8192, contentChars: 0 }
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('provider falls back to json_object and omits temperature when neither is configured', async () => {
+  const body = await captureRequestBody(async (baseUrl) => {
+    const provider = createOpenAICompatibleProvider({
+      baseUrl,
+      model: 'm',
+      maxPromptChars: 1000,
+      timeoutMs: 1000,
+      maxResponseBytes: 10_000
+    });
+    await provider.complete({ systemPrompt: 's', userPrompt: 'u' });
+  });
+
+  assert.deepEqual(body.response_format, { type: 'json_object' });
+  assert.equal('temperature' in body, false);
+  assert.equal('reasoning_effort' in body, false);
 });

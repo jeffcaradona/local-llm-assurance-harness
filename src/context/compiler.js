@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { HarnessError } from '../errors.js';
-import { reviewSchema } from '../review/schema.js';
+import { modelReviewSchema } from '../review/schema.js';
 
 async function loadInstructionFile(filePath, signal) {
   if (signal?.aborted) {
@@ -27,7 +27,7 @@ export async function compilePromptContext({ request, evidence, instructionFiles
     instructionsText || 'No trusted instructions were provided.',
     'Return only one JSON object matching the following JSON Schema. Do not use Markdown fences or add other properties.',
     'Base the review on supplied evidence. Use empty arrays when there are no supported entries; do not invent findings or evidence IDs.',
-    `Review response JSON Schema:\n${JSON.stringify(reviewSchema)}`
+    `Review response JSON Schema:\n${JSON.stringify(modelReviewSchema)}`
   ].join('\n\n');
   const userPrefix = `Review request: ${request}\n\nSupplied evidence:\n`;
   const noEvidenceText = 'No evidence supplied.';
@@ -56,6 +56,7 @@ export async function compilePromptContext({ request, evidence, instructionFiles
   return {
     systemPrompt,
     userPrompt,
+    responseSchema: modelReviewSchema,
     includedEvidenceIds: includedEvidence.map((x) => x.id),
     omittedEvidenceIds: omittedEvidence
   };

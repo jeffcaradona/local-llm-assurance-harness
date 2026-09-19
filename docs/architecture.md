@@ -22,7 +22,7 @@
 2. Collect bounded evidence via approved filesystem capabilities.
 3. Load trusted instruction files explicitly provided by operator.
 4. Compile bounded prompt with stable evidence identifiers.
-5. Invoke configured local-compatible model endpoint.
+5. Invoke configured local-compatible model endpoint, requesting output constrained to the review schema.
 6. Validate response against strict schema version.
 7. Verify model evidence references only target supplied evidence IDs.
 8. Render report.
