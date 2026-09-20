@@ -1,6 +1,35 @@
 import { lstat, open, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { HarnessError } from '../errors.js';
+import {
+  isLikelySensitivePath,
+  resolveContainedPath,
+  withCollectionMetadata,
+} from '../capabilities/registry.js';
+
+function checkAborted(signal) {
+  if (signal?.aborted)
+    throw new HarnessError('E_ABORTED', 'Collection cancelled.');
+}
+
+function boundedLimit(value, maximum) {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+    throw new HarnessError(
+      'E_CAPABILITY_INPUT_INVALID',
+      'Invalid collection limit.'
+    );
+  }
+  return Math.min(value ?? maximum, maximum);
+}
+
+const SKIPPABLE_CODES = new Set([
+  'E_PATH_OUT_OF_ROOT',
+  'E_SENSITIVE_PATH_BLOCKED',
+  'E_SYMLINK_BLOCKED',
+  'E_FILE_NOT_FOUND',
+  'E_CAPABILITY_INPUT_INVALID',
+]);
 
 function escapesRoot(relPath) {
   return (
@@ -17,17 +46,52 @@ export function createFilesystemCollector({
   limits,
   redactor,
 }) {
+  const configuredRoot = resolve(rootPath);
   let canonicalRootPromise;
   const getCanonicalRoot = () =>
-    (canonicalRootPromise ??= realpath(resolve(rootPath)));
+    (canonicalRootPromise ??= realpath(configuredRoot));
 
-  async function assertPathContained(absolutePath) {
+  async function assertPathContained(pathText, signal) {
+    checkAborted(signal);
     const rootReal = await getCanonicalRoot();
+    let absolutePath;
+    try {
+      const configuredPath = resolveContainedPath(configuredRoot, pathText);
+      absolutePath = resolve(
+        rootReal,
+        relative(configuredRoot, configuredPath)
+      );
+    } catch (error) {
+      if (
+        error.code !== 'E_PATH_OUT_OF_ROOT' ||
+        typeof pathText !== 'string' ||
+        !isAbsolute(pathText.replaceAll('\\', '/'))
+      )
+        throw error;
+      // Subprocesses run from the canonical root and may emit canonical paths.
+      absolutePath = resolveContainedPath(rootReal, pathText);
+    }
+    const relativePath = relative(rootReal, absolutePath).replaceAll('\\', '/');
+    if (
+      isLikelySensitivePath(pathText) ||
+      isLikelySensitivePath(relativePath)
+    ) {
+      throw new HarnessError(
+        'E_SENSITIVE_PATH_BLOCKED',
+        'Sensitive file path blocked by policy.'
+      );
+    }
     let resolved;
     try {
       resolved = await realpath(absolutePath);
     } catch (error) {
-      if (error?.code === 'ENOENT') {
+      if (error?.code === 'ELOOP') {
+        throw new HarnessError(
+          'E_SYMLINK_BLOCKED',
+          'Symlink paths are not collected.'
+        );
+      }
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
         throw new HarnessError(
           'E_FILE_NOT_FOUND',
           'Requested file does not exist.',
@@ -44,35 +108,61 @@ export function createFilesystemCollector({
         { absolutePath }
       );
     }
-    return { rootReal };
-  }
-
-  async function readBoundedText(absolutePath, maxBytes, rootReal) {
-    const pathStat = await lstat(absolutePath);
-    if (pathStat.isSymbolicLink()) {
+    if (isLikelySensitivePath(rel)) {
       throw new HarnessError(
-        'E_SYMLINK_BLOCKED',
-        'Symlink paths are not collected.',
-        { absolutePath }
+        'E_SENSITIVE_PATH_BLOCKED',
+        'Sensitive file path blocked by policy.'
       );
     }
-
-    const file = await open(absolutePath, 'r');
-    try {
-      const handleStat = await file.stat();
-      const postResolvedPath = await realpath(absolutePath);
-      const postRel = relative(rootReal, postResolvedPath);
-      if (escapesRoot(postRel)) {
+    let currentPath = rootReal;
+    let pathStat = await lstat(rootReal);
+    for (const component of relativePath.split('/').filter(Boolean)) {
+      checkAborted(signal);
+      currentPath = resolve(currentPath, component);
+      pathStat = await lstat(currentPath);
+      if (pathStat.isSymbolicLink()) {
         throw new HarnessError(
-          'E_PATH_OUT_OF_ROOT',
-          'Path escaped approved root during read.',
-          { absolutePath }
+          'E_SYMLINK_BLOCKED',
+          'Symlink paths are not collected.'
         );
       }
-      const currentPathStat = await lstat(postResolvedPath);
+    }
+    checkAborted(signal);
+    if (!pathStat.isFile()) {
+      throw new HarnessError(
+        'E_CAPABILITY_INPUT_INVALID',
+        'Only regular files are collected.'
+      );
+    }
+    return { rootReal, absolutePath, relativePath, pathStat };
+  }
+
+  async function readBoundedText(containment, maxBytes, signal) {
+    const { absolutePath, pathStat } = containment;
+    checkAborted(signal);
+    const file = await open(
+      absolutePath,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0)
+    );
+    try {
+      const handleStat = await file.stat();
+      if (!handleStat.isFile()) {
+        throw new HarnessError(
+          'E_CAPABILITY_INPUT_INVALID',
+          'Only regular files are collected.'
+        );
+      }
+      const { pathStat: currentPathStat } = await assertPathContained(
+        absolutePath,
+        signal
+      );
       if (
         handleStat.dev !== currentPathStat.dev ||
-        handleStat.ino !== currentPathStat.ino
+        handleStat.ino !== currentPathStat.ino ||
+        handleStat.dev !== pathStat.dev ||
+        handleStat.ino !== pathStat.ino
       ) {
         throw new HarnessError(
           'E_PATH_RACE_DETECTED',
@@ -84,6 +174,7 @@ export function createFilesystemCollector({
       const retain = Math.min(handleStat.size, maxBytes);
       const buffer = Buffer.alloc(retain);
       const { bytesRead } = await file.read(buffer, 0, retain, 0);
+      checkAborted(signal);
       const body = buffer.subarray(0, bytesRead);
       if (body.includes(0)) {
         throw new HarnessError(
@@ -104,6 +195,8 @@ export function createFilesystemCollector({
   }
 
   async function runFd({ signal, limit }) {
+    checkAborted(signal);
+    const fileLimit = boundedLimit(limit, limits.maxFiles);
     const rootReal = await getCanonicalRoot();
     const result = await runner.run(
       'fd',
@@ -128,27 +221,47 @@ export function createFilesystemCollector({
         env: {},
       }
     );
+    checkAborted(signal);
     if (result.exitCode !== 0) {
       throw new HarnessError('E_FIND_FAILED', 'File discovery failed.', {
         stderr: result.stderr,
         exitCode: result.exitCode,
       });
     }
-    const files = await Promise.all(
-      result.stdout
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .map(async (item) => {
-          const abs = await realpath(resolve(rootReal, item));
-          return relative(rootReal, abs).replaceAll('\\', '/');
-        })
-    );
-    return files.sort().slice(0, limit ?? limits.maxFiles);
+    const files = new Set();
+    let omittedCount = 0;
+    const lines = result.stdout.split(/\r?\n/);
+    if (result.stdoutTruncated) lines.pop();
+    for (const item of lines.filter(Boolean)) {
+      try {
+        const { relativePath } = await assertPathContained(item, signal);
+        files.add(relativePath);
+      } catch (error) {
+        if (!SKIPPABLE_CODES.has(error.code)) throw error;
+        omittedCount += 1;
+      }
+    }
+    return withCollectionMetadata([...files].sort().slice(0, fileLimit), {
+      truncated: result.stdoutTruncated || files.size > fileLimit,
+      omittedCount: omittedCount + Math.max(0, files.size - fileLimit),
+    });
   }
 
   async function searchText({ pattern, signal, maxMatches }) {
+    checkAborted(signal);
+    if (
+      typeof pattern !== 'string' ||
+      !pattern ||
+      pattern.startsWith('-') ||
+      pattern.includes('\0')
+    ) {
+      throw new HarnessError(
+        'E_CAPABILITY_INPUT_INVALID',
+        'Invalid search pattern.'
+      );
+    }
     const rootReal = await getCanonicalRoot();
-    const matchLimit = maxMatches ?? limits.maxSearchMatches;
+    const matchLimit = boundedLimit(maxMatches, limits.maxSearchMatches);
     const result = await runner.run(
       'rg',
       [
@@ -178,6 +291,7 @@ export function createFilesystemCollector({
         env: {},
       }
     );
+    checkAborted(signal);
 
     if (result.exitCode !== 0 && result.exitCode !== 1) {
       throw new HarnessError('E_SEARCH_FAILED', 'Text search failed.', {
@@ -187,6 +301,7 @@ export function createFilesystemCollector({
     }
 
     const matches = [];
+    let omittedCount = 0;
     const lines = result.stdout.split(/\r?\n/);
     for (const [index, line] of lines.entries()) {
       if (!line.trim()) continue;
@@ -201,8 +316,37 @@ export function createFilesystemCollector({
           { line }
         );
       }
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new HarnessError(
+          'E_SEARCH_OUTPUT_INVALID',
+          'Search output was malformed.'
+        );
+      }
       if (item.type !== 'match') continue;
-      const relPath = relative(rootReal, item.data.path.text);
+      if (
+        typeof item.data?.path?.text !== 'string' ||
+        typeof item.data?.lines?.text !== 'string' ||
+        !Number.isSafeInteger(item.data.line_number) ||
+        item.data.line_number < 1
+      ) {
+        throw new HarnessError(
+          'E_SEARCH_OUTPUT_INVALID',
+          'Search output was malformed.'
+        );
+      }
+      let relPath;
+      try {
+        ({ relativePath: relPath } = await assertPathContained(
+          item.data.path.text,
+          signal
+        ));
+      } catch (error) {
+        if (SKIPPABLE_CODES.has(error.code)) {
+          omittedCount += 1;
+          continue;
+        }
+        throw error;
+      }
       matches.push({
         relativePath: relPath,
         lineStart: item.data.line_number,
@@ -215,28 +359,27 @@ export function createFilesystemCollector({
       });
       if (matches.length >= matchLimit) break;
     }
-    return matches.sort((a, b) =>
-      `${a.relativePath}:${a.lineStart}`.localeCompare(
-        `${b.relativePath}:${b.lineStart}`
-      )
+    return withCollectionMetadata(
+      matches.sort((a, b) =>
+        `${a.relativePath}:${a.lineStart}`.localeCompare(
+          `${b.relativePath}:${b.lineStart}`
+        )
+      ),
+      {
+        truncated: result.stdoutTruncated || matches.length >= matchLimit,
+        omittedCount,
+      }
     );
   }
 
   async function readTextFile({ path, signal, maxBytes }) {
-    if (signal?.aborted) {
-      throw new HarnessError('E_ABORTED', 'Read cancelled before start.');
-    }
-    const rootReal = await getCanonicalRoot();
-    const absolutePath = resolve(rootReal, path);
-    const containment = await assertPathContained(absolutePath);
-    const result = await readBoundedText(
-      absolutePath,
-      maxBytes ?? limits.maxFileBytes,
-      containment.rootReal
-    );
+    checkAborted(signal);
+    const byteLimit = boundedLimit(maxBytes, limits.maxFileBytes);
+    const containment = await assertPathContained(path, signal);
+    const result = await readBoundedText(containment, byteLimit, signal);
     const redacted = redactor.redact(result.content);
     return {
-      relativePath: path,
+      relativePath: containment.relativePath,
       lineStart: 1,
       lineEnd: redacted.split(/\r?\n/).length,
       content: redacted,

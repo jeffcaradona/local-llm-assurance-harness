@@ -10,6 +10,22 @@ function parseArgs(argv) {
     const token = rest[i];
     if (!token.startsWith('--')) continue;
     const key = token.slice(2);
+    if (key === 'investigate' || key.startsWith('investigate=')) {
+      if (
+        command !== 'review' ||
+        key !== 'investigate' ||
+        options.investigate !== undefined ||
+        (rest[i + 1] !== undefined && !rest[i + 1].startsWith('--'))
+      ) {
+        throw new HarnessError(
+          'E_CLI_OPTION_INVALID',
+          '--investigate is a review-only boolean flag and may appear only once.',
+          { option: '--investigate' }
+        );
+      }
+      options.investigate = true;
+      continue;
+    }
     const value =
       rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[++i] : true;
     if (options[key] === undefined) options[key] = value;
@@ -20,7 +36,7 @@ function parseArgs(argv) {
 }
 
 function helpText() {
-  return `local-llm-assurance-harness\n\nUsage:\n  npm start -- --help\n  npm start -- review --root . --file src/server.js --request "Review asynchronous lifecycle and error handling."\n  npm start -- review --root . --search "Promise.all" --request "Review concurrency bounds." --format json\n  npm start -- replay --bundle /absolute/path/to/run.replay.json --format terminal\n\nCommands:\n  review    Run deterministic repository review pipeline\n  replay    Recompile, verify, and render a sanitized replay bundle\n\nReview options:\n  --root <path>             Repository root (default: current directory)\n  --request <text>          Required review request\n  --file <path>             File to review; may be repeated\n  --search <text>           Fixed-string search; may be repeated\n  --instructions <path>     Trusted instruction file; may be repeated\n  --output-dir <path>       Artifact directory outside the repository\n  --replay                  Persist a sanitized replay bundle\n  --format terminal|json    Report format (default: terminal)\n\nReplay options:\n  --bundle <path>           Required replay bundle\n  --format terminal|json    Report format (default: terminal)\n`;
+  return `local-llm-assurance-harness\n\nUsage:\n  npm start -- --help\n  npm start -- review --root . --file src/server.js --request "Review asynchronous lifecycle and error handling."\n  npm start -- review --root . --search "Promise.all" --request "Review concurrency bounds." --format json\n  npm start -- replay --bundle /absolute/path/to/run.replay.json --format terminal\n\nCommands:\n  review    Run deterministic repository review pipeline\n  replay    Recompile, verify, and render a sanitized replay bundle\n\nReview options:\n  --root <path>             Repository root (default: current directory)\n  --request <text>          Required review request\n  --file <path>             File to review; may be repeated\n  --search <text>           Fixed-string search; may be repeated\n  --instructions <path>     Trusted instruction file; may be repeated\n  --output-dir <path>       Artifact directory outside the repository\n  --replay                  Persist a sanitized replay bundle\n  --investigate             Run a bounded adaptive investigation\n  --format terminal|json    Report format (default: terminal)\n\nReplay options:\n  --bundle <path>           Required replay bundle\n  --format terminal|json    Report format (default: terminal)\n`;
 }
 
 function toList(value) {
@@ -117,13 +133,16 @@ export async function runCli({
         resolve(String(x))
       ),
       includeReplay: options.replay === true,
+      investigate: options.investigate === true,
+      onProgress: () => stderr.write('Investigation progress.\n'),
       format: parseFormat(options.format),
       signal: rootController.signal,
     });
     stdout.write(`${result.reportText}\n`);
-    stdout.write(`Manifest: ${result.manifestPath}\n`);
+    const notices = options.format === 'json' ? stderr : stdout;
+    notices.write(`Manifest: ${result.manifestPath}\n`);
     if (result.replayPath)
-      stdout.write(`Replay bundle: ${result.replayPath}\n`);
+      notices.write(`Replay bundle: ${result.replayPath}\n`);
     return 0;
   } finally {
     process.removeListener('SIGINT', shutdown);
