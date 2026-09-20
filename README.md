@@ -14,7 +14,7 @@ The default is **read-only repository review** with deterministic collection and
 
 ## Supported runtimes
 
-Node.js versions supported by this repository: **22.x and 24.x LTS** (`>=22.0.0 <25`).
+Node.js versions supported by this repository: **22.x, 24.x, and 26.x** (`>=22.0.0 <23 || >=24.0.0 <25 || >=26.0.0 <27`).
 
 This baseline is based on Node.js release status published at:
 
