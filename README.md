@@ -143,9 +143,11 @@ Policy and limits:
 
 ## Output and replay
 
+- Investigation terminal reports show harness limits, call counts, and elapsed time separately from model-authored limitation notes.
 - Manifest: metadata-only sanitized artifact (`<run-id>.manifest.json`), published last as the success marker. Failures report errors on stderr, not a successful report.
 - Investigation manifests add safe counts, turn/status metadata, stop reasons, and evidence inclusion/omission IDs, not prompts, tool arguments, or source excerpts. Investigation failures report safe stage/count metadata on stderr when available, not a success artifact.
 - Replay bundle: optional (`--replay`) redacted evidence and inputs for offline verification. Investigation bundles are separately versioned and preserve sanitized actions and outcomes needed to verify the recorded execution. Replay does not rerun model inference or filesystem tools, reproduce model nondeterminism, establish authenticity, or prove findings correct. Legacy single-pass replay remains unchanged.
+- Investigation recording `1.1.0` marks changed argument representations with `argumentsRedacted`; model protocol `1.0.0` and strict older investigation recordings remain supported. Live tools receive original validated arguments, never redaction replacements. Offline replay preserves sanitized seed order (including collisions) and verifies recorded representations, not the unavailable original commands.
 - Redaction does not declassify source code: replay bundles can still contain confidential excerpts, requests, and instructions. Protect them accordingly.
 - Artifacts are written to an explicit output directory outside the reviewed repository root.
 - Persistence stages files inside that output directory, publishes optional replay before the manifest, and preserves existing files on name collisions. Abort/failure triggers best-effort cleanup of this run's staging and newly published artifacts. Cleanup can finish after in-flight filesystem IO settles; crashes or cleanup failures can leave residual files.

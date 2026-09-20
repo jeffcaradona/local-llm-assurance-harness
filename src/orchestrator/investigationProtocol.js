@@ -63,6 +63,39 @@ export const investigationActionSchema = {
 const ajv = new Ajv({ strict: true, allErrors: true });
 const validateAction = ajv.compile(investigationActionSchema);
 const validateFinal = ajv.compile(finalActionSchema);
+// Recorded redacted strings are representations, not executable arguments.
+const recordedActionSchema = structuredClone(investigationActionSchema);
+for (const variant of recordedActionSchema.oneOf.slice(1)) {
+  for (const property of Object.values(
+    variant.properties.arguments.properties
+  )) {
+    delete property.maxLength;
+    delete property.pattern;
+  }
+}
+const validateRecordedAction = ajv.compile(recordedActionSchema);
+
+export function validateRecordedInvestigationAction(
+  action,
+  argumentsRedacted,
+  finalOnly = false
+) {
+  if (argumentsRedacted === false)
+    return validateInvestigationAction(action, finalOnly);
+  if (
+    argumentsRedacted !== true ||
+    action?.action !== 'tool' ||
+    action.tool === 'filesystem.findFiles' ||
+    finalOnly ||
+    !validateRecordedAction(action)
+  ) {
+    throw new HarnessError(
+      'E_INVESTIGATION_ACTION_INVALID',
+      'Invalid recorded investigation action representation.'
+    );
+  }
+  return action;
+}
 
 export function validateInvestigationAction(action, finalOnly = false) {
   if (finalOnly && action?.action === 'tool') {

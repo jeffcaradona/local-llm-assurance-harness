@@ -19,6 +19,7 @@ import {
 } from '../src/orchestrator/investigationLoop.js';
 import { compileInvestigationContext } from '../src/orchestrator/investigationContext.js';
 import { createReviewOrchestrator } from '../src/orchestrator/reviewOrchestrator.js';
+import { createReplayOrchestrator } from '../src/orchestrator/replay.js';
 
 function config(overrides = {}) {
   const defaults = resolveRuntimeConfig({});
@@ -325,7 +326,7 @@ test('redaction covers arguments, evidence, review, prompts and persisted replay
     includeReplay: true,
     format: 'json',
   });
-  assert.equal(io.calls[0].args.pattern, '[REDACTED_SECRET]');
+  assert.equal(io.calls[0].args.pattern, secret);
   const manifestText = await readFile(result.manifestPath, 'utf8');
   const replayText = await readFile(result.replayPath, 'utf8');
   for (const text of [
@@ -345,6 +346,137 @@ test('redaction covers arguments, evidence, review, prompts and persisted replay
   assert.equal(replay.events[0].action.arguments.pattern, '[REDACTED_SECRET]');
   assert.equal(replay.review.summary, 'Review [REDACTED_SECRET]');
   assert.equal(admission.stats().active, 0);
+});
+
+test('default field redaction never changes seed or model search execution', async () => {
+  const pattern = 'token=abc';
+  const io = scripted([tool('searchText', { pattern }), final()]);
+  const result = await run(io, { searches: [pattern] });
+  assert.deepEqual(
+    io.calls.map(({ args }) => args.pattern),
+    [pattern, pattern]
+  );
+  assert.ok(!JSON.stringify(result).includes(pattern));
+  assert.ok(!JSON.stringify(io.prompts).includes(pattern));
+  assert.deepEqual(result.replayBundle.seedArgumentsRedacted.searches, [true]);
+  for (const event of result.replayBundle.events.slice(0, -1))
+    assert.equal(event.argumentsRedacted, true);
+});
+
+test('secret filenames execute unchanged for seed and model reads, but remain absent from artifacts and offline replay', async (t) => {
+  const { rootPath, outputDir } = await workspace(t);
+  const secret = 'private-filename';
+  const path = `src/${secret}.js`;
+  const io = scripted([tool('readTextFile', { path }), final(['ev-0001'])]);
+  const { reviewer } = orchestrator(
+    { ...io, redactor: createRedactor({ secrets: [secret] }) },
+    outputDir
+  );
+  const result = await reviewer.review({
+    rootPath,
+    request: `Review ${secret}`,
+    selectedFiles: [path],
+    investigate: true,
+    includeReplay: true,
+  });
+  assert.deepEqual(
+    io.calls.map(({ args }) => args.path),
+    [path, path]
+  );
+  for (const text of [
+    JSON.stringify(io.prompts),
+    result.reportText,
+    await readFile(result.manifestPath, 'utf8'),
+    await readFile(result.replayPath, 'utf8'),
+  ])
+    assert.ok(!text.includes(secret));
+  t.mock.method(globalThis, 'fetch', () => {
+    assert.fail('offline replay must not contact a provider');
+  });
+  const callsBefore = io.calls.length;
+  const promptsBefore = io.prompts.length;
+  const report = await createReplayOrchestrator().replay({
+    bundlePath: result.replayPath,
+  });
+  assert.ok(!report.includes(secret));
+  assert.equal(io.calls.length, callsBefore);
+  assert.equal(io.prompts.length, promptsBefore);
+});
+
+test('redaction only transforms action payloads, not protocol discriminators or tool enums', async () => {
+  const io = scripted([tool('findFiles'), final()]);
+  const result = await run(io, {
+    redactor: createRedactor({
+      secrets: ['filesystem.findFiles', 'tool', 'final'],
+    }),
+  });
+  assert.equal(io.calls[0].name, 'filesystem.findFiles');
+  assert.equal(result.replayBundle.events[0].action.action, 'tool');
+  assert.equal(
+    result.replayBundle.events[0].action.tool,
+    'filesystem.findFiles'
+  );
+  assert.equal(result.replayBundle.events.at(-1).action.action, 'final');
+});
+
+test('raw invalid arguments cannot become executable by redaction', async () => {
+  for (const path of ['/private-invalid', 'private-invalid'.repeat(100)]) {
+    const io = scripted([tool('readTextFile', { path })]);
+    await assert.rejects(
+      run(io, { redactor: createRedactor({ secrets: [path] }) }),
+      (error) => {
+        assert.equal(error.code, 'E_INVESTIGATION_ACTION_INVALID');
+        assert.ok(!JSON.stringify(error).includes(path));
+        return true;
+      }
+    );
+    assert.deepEqual(io.calls, []);
+  }
+});
+
+test('configured secret arguments and capability errors are not exposed', async () => {
+  const secret = 'private-error-filename';
+  const io = scripted(
+    [tool('readTextFile', { path: `${secret}.js` }), final()],
+    {
+      'filesystem.readTextFile': ({ path }) => {
+        assert.equal(path, `${secret}.js`);
+        throw new HarnessError('E_PATH_OUT_OF_ROOT', `Denied ${secret}`, {
+          path,
+        });
+      },
+    }
+  );
+  const result = await run(io, {
+    redactor: createRedactor({ secrets: [secret] }),
+  });
+  assert.equal(result.replayBundle.events[1].outcome.status, 'error');
+  assert.ok(!JSON.stringify(result).includes(secret));
+  assert.ok(!JSON.stringify(io.prompts).includes(secret));
+});
+
+test('redaction cannot hide a denied seed or model path from capability policy', async () => {
+  const path = '.env.private-secret';
+  const io = scripted([tool('readTextFile', { path }), final()]);
+  io.capabilities = createCapabilityRegistry({
+    rootPath: resolve('.'),
+    collector: {
+      readTextFile: () => assert.fail('denied original path reached collector'),
+    },
+  });
+  const result = await run(io, {
+    selectedFiles: [path],
+    redactor: createRedactor({ secrets: [path] }),
+  });
+  const operations = result.replayBundle.events.filter(
+    (event) => event.kind === 'tool'
+  );
+  assert.equal(operations.length, 2);
+  for (const operation of operations) {
+    assert.equal(operation.arguments.path, '[REDACTED_SECRET]');
+    assert.equal(operation.outcome.error.code, 'E_SENSITIVE_PATH_BLOCKED');
+  }
+  assert.ok(!JSON.stringify(result).includes(path));
 });
 
 test('JSON reports and metadata-only default manifests include investigation accounting', async (t) => {

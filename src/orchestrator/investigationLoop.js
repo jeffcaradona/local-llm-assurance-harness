@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { HarnessError } from '../errors.js';
 import { createRedactor } from '../redaction.js';
 import { compilePromptContext } from '../context/compiler.js';
@@ -10,6 +11,7 @@ import { compileInvestigationContext } from './investigationContext.js';
 import {
   INVESTIGATION_PROTOCOL_VERSION,
   validateInvestigationAction,
+  validateRecordedInvestigationAction,
 } from './investigationProtocol.js';
 import {
   validateReviewPayload,
@@ -29,6 +31,15 @@ const SAFE_TOOL_ERRORS = new Set([
   'E_FIND_FAILED',
   'E_SEARCH_FAILED',
 ]);
+
+export const INVESTIGATION_REPLAY_VERSION = '1.1.0';
+
+export function investigationResponseRepresentationLimit(config) {
+  return Math.max(
+    config.model.maxPromptChars,
+    config.model.maxResponseBytes * 32
+  );
+}
 
 export function sanitizeInvestigationValue(value, redactor) {
   if (typeof value === 'string') return redactor.redact(value);
@@ -111,6 +122,7 @@ export async function executeInvestigation({
   onProgress = () => {},
   now = Date.now,
   startedAt,
+  replayRecord,
 }) {
   const started = startedAt ?? now();
   const budget = config.investigation;
@@ -142,8 +154,21 @@ export async function executeInvestigation({
   const clean = (value) => sanitizeInvestigationValue(value, redactor);
   request = clean(request);
   trustedInstructions = clean(trustedInstructions);
-  selectedFiles = [...new Set(clean(selectedFiles))].sort();
-  searches = clean(searches);
+  // Sort/deduplicate originals only. Redacted paths can collide or sort differently.
+  const seedFiles =
+    replayRecord?.version === INVESTIGATION_REPLAY_VERSION
+      ? selectedFiles
+      : [...new Set(selectedFiles)].sort();
+  const seedSearches = searches;
+  selectedFiles = clean(seedFiles);
+  searches = clean(seedSearches);
+  const legacyReplay = replayRecord?.version === INVESTIGATION_PROTOCOL_VERSION;
+  const seedArgumentsRedacted = replayRecord?.seedArgumentsRedacted ?? {
+    selectedFiles: seedFiles.map(
+      (path, index) => path !== selectedFiles[index]
+    ),
+    searches: seedSearches.map((pattern, index) => pattern !== searches[index]),
+  };
 
   function checkExecution() {
     checkAbort(signal);
@@ -246,7 +271,7 @@ export async function executeInvestigation({
     if (totalBytes >= limits.maxEvidenceBytes) limit('evidence_budget');
     return item;
   }
-  async function tool(tool, args, seed) {
+  async function tool(tool, args, seed, argumentsRedacted) {
     checkExecution();
     const callId = seed ? `seed-${++seedCalls}` : `call-${++toolCalls}`;
     if (tool === 'filesystem.readTextFile') fileCalls += 1;
@@ -258,6 +283,7 @@ export async function executeInvestigation({
       callId,
       tool,
       arguments: clean(args),
+      ...(!legacyReplay ? { argumentsRedacted } : {}),
       bounds: {
         maxBytes: limits.maxFileBytes,
         maxMatches: availableMatches,
@@ -265,7 +291,10 @@ export async function executeInvestigation({
       },
     };
     const begin = now();
-    const raw = await cancellable(() => exchange(invocation), signal);
+    const raw = await cancellable(
+      () => exchange(invocation, replayRecord ? undefined : args),
+      signal
+    );
     checkExecution();
     const result = {
       callId,
@@ -409,11 +438,16 @@ export async function executeInvestigation({
     // Fail before any IO if even an empty context cannot reserve finalization.
     if (gatheringPossible) compile(false, [], true);
     compile(true, [], true);
-    for (const path of selectedFiles) {
+    for (const [index, path] of seedFiles.entries()) {
       if (stopReason) break;
-      await tool('filesystem.readTextFile', { path }, true);
+      await tool(
+        'filesystem.readTextFile',
+        { path },
+        true,
+        seedArgumentsRedacted.selectedFiles[index]
+      );
     }
-    for (const pattern of searches) {
+    for (const [index, pattern] of seedSearches.entries()) {
       if (
         stopReason ||
         seedCalls >= limits.maxFiles + limits.maxSearchMatches
@@ -421,7 +455,12 @@ export async function executeInvestigation({
         limit('collection_budget');
         break;
       }
-      await tool('filesystem.searchText', { pattern }, true);
+      await tool(
+        'filesystem.searchText',
+        { pattern },
+        true,
+        seedArgumentsRedacted.searches[index]
+      );
     }
     for (;;) {
       checkExecution();
@@ -451,19 +490,53 @@ export async function executeInvestigation({
       };
       const rawAction = await cancellable(() => exchange(invocation), signal);
       checkExecution();
-      if (
-        Buffer.byteLength(JSON.stringify(rawAction) ?? '') >
-        config.model.maxResponseBytes
-      ) {
+      const recordedArgumentsRedacted =
+        replayRecord?.events[events.length]?.argumentsRedacted ?? false;
+      const responseBytes =
+        replayRecord && !legacyReplay
+          ? replayRecord.events[events.length].responseBytes
+          : Buffer.byteLength(JSON.stringify(rawAction) ?? '');
+      if (responseBytes > config.model.maxResponseBytes) {
         throw new HarnessError(
           'E_MODEL_RESPONSE_TOO_LARGE',
           'Model response exceeded byte limit.'
         );
       }
-      validateInvestigationAction(rawAction, finalOnly);
-      const action = clean(rawAction);
-      validateInvestigationAction(action, finalOnly);
-      events.push({ ...invocation, action });
+      if (replayRecord)
+        validateRecordedInvestigationAction(
+          rawAction,
+          recordedArgumentsRedacted,
+          finalOnly
+        );
+      else validateInvestigationAction(rawAction, finalOnly);
+      const action =
+        rawAction.action === 'tool'
+          ? { ...rawAction, arguments: clean(rawAction.arguments) }
+          : { action: 'final', review: clean(rawAction.review) };
+      const argumentsRedacted = replayRecord
+        ? recordedArgumentsRedacted
+        : action.action === 'tool' &&
+          !isDeepStrictEqual(action.arguments, rawAction.arguments);
+      const responseRedacted = replayRecord
+        ? (replayRecord.events[events.length]?.responseRedacted ?? false)
+        : !isDeepStrictEqual(action, rawAction);
+      if (
+        !legacyReplay &&
+        Buffer.byteLength(JSON.stringify(action)) >
+          investigationResponseRepresentationLimit(config)
+      ) {
+        throw new HarnessError(
+          'E_MODEL_RESPONSE_TOO_LARGE',
+          'Sanitized model response exceeded representation byte limit.'
+        );
+      }
+      events.push({
+        ...invocation,
+        action,
+        ...(!legacyReplay
+          ? { argumentsRedacted, responseBytes, responseRedacted }
+          : {}),
+      });
       turns.push({
         kind: 'model',
         callId: invocation.callId,
@@ -484,10 +557,13 @@ export async function executeInvestigation({
         const investigation = metadata();
         const replayBundle = {
           format: 'investigation',
-          version: INVESTIGATION_PROTOCOL_VERSION,
+          version: legacyReplay
+            ? INVESTIGATION_PROTOCOL_VERSION
+            : INVESTIGATION_REPLAY_VERSION,
           request,
           selectedFiles,
           searches,
+          ...(!legacyReplay ? { seedArgumentsRedacted } : {}),
           trustedInstructions,
           redaction: redactor.describe(),
           config,
@@ -509,7 +585,7 @@ export async function executeInvestigation({
         };
       }
       stage = 'tool';
-      await tool(action.tool, action.arguments, false);
+      await tool(rawAction.tool, rawAction.arguments, false, argumentsRedacted);
     }
   } catch (error) {
     const code = signal?.aborted
@@ -580,7 +656,7 @@ export async function runInvestigation({
     redactor,
     onProgress,
     startedAt,
-    async exchange(invocation) {
+    async exchange(invocation, executionArguments) {
       if (invocation.kind === 'model') {
         return provider.complete({ ...invocation.context, signal });
       }
@@ -594,7 +670,7 @@ export async function runInvestigation({
       );
       try {
         let value;
-        const args = invocation.arguments;
+        const args = executionArguments;
         // Explicit dispatch only: model strings never index arbitrary functions.
         switch (invocation.tool) {
           case 'filesystem.findFiles':

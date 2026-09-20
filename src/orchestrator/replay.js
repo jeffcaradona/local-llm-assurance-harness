@@ -10,10 +10,13 @@ import { compilePromptContext } from '../context/compiler.js';
 import {
   executeInvestigation,
   investigationDigest,
+  INVESTIGATION_REPLAY_VERSION,
+  investigationResponseRepresentationLimit,
 } from './investigationLoop.js';
 import {
   INVESTIGATION_PROTOCOL_VERSION,
   validateInvestigationAction,
+  validateRecordedInvestigationAction,
 } from './investigationProtocol.js';
 
 function invalid(condition) {
@@ -59,7 +62,30 @@ function match(actual, expected) {
   }
 }
 
+function minimumResponseBytes(action) {
+  const stripStrings = (value) => {
+    if (typeof value === 'string') return '';
+    if (Array.isArray(value)) return value.map(stripStrings);
+    if (value && typeof value === 'object')
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, stripStrings(item)])
+      );
+    return value;
+  };
+  const minimum =
+    action.action === 'tool'
+      ? {
+          ...action,
+          arguments: Object.fromEntries(
+            Object.keys(action.arguments).map((key) => [key, 'x'])
+          ),
+        }
+      : { action: 'final', review: stripStrings(action.review) };
+  return Buffer.byteLength(JSON.stringify(minimum));
+}
+
 function validateInvestigationBundle(bundle) {
+  const current = bundle?.version === INVESTIGATION_REPLAY_VERSION;
   object(
     bundle,
     [
@@ -79,12 +105,15 @@ function validateInvestigationBundle(bundle) {
       'omittedEvidenceIds',
       'investigation',
       'digest',
+      ...(current ? ['seedArgumentsRedacted'] : []),
     ],
     ['runId']
   );
   invalid(
     bundle.format === 'investigation' &&
-      bundle.version === INVESTIGATION_PROTOCOL_VERSION
+      [INVESTIGATION_PROTOCOL_VERSION, INVESTIGATION_REPLAY_VERSION].includes(
+        bundle.version
+      )
   );
   invalid(bundle.runId === undefined || typeof bundle.runId === 'string');
   invalid(
@@ -114,8 +143,39 @@ function validateInvestigationBundle(bundle) {
     typeof bundle.request === 'string' &&
       bundle.request.length <= config.model.maxPromptChars
   );
-  strings(bundle.selectedFiles, config.model.maxPromptChars);
-  strings(bundle.searches, config.model.maxPromptChars);
+  if (current) {
+    object(bundle.seedArgumentsRedacted, ['selectedFiles', 'searches']);
+    for (const key of ['selectedFiles', 'searches']) {
+      strings(bundle[key]);
+      const flags = bundle.seedArgumentsRedacted[key];
+      invalid(
+        Array.isArray(flags) &&
+          flags.length === bundle[key].length &&
+          flags.every((flag) => typeof flag === 'boolean')
+      );
+      invalid(
+        bundle[key].every(
+          (value, index) =>
+            flags[index] || value.length <= config.model.maxPromptChars
+        )
+      );
+    }
+    const unchangedFiles = bundle.selectedFiles.filter(
+      (_, index) => !bundle.seedArgumentsRedacted.selectedFiles[index]
+    );
+    invalid(
+      isDeepStrictEqual(unchangedFiles, [...new Set(unchangedFiles)].sort())
+    );
+  } else {
+    strings(bundle.selectedFiles, config.model.maxPromptChars);
+    strings(bundle.searches, config.model.maxPromptChars);
+    invalid(
+      isDeepStrictEqual(
+        bundle.selectedFiles,
+        [...new Set(bundle.selectedFiles)].sort()
+      )
+    );
+  }
   invalid(
     [...bundle.selectedFiles, ...bundle.searches].every(
       (value) => value.length > 0
@@ -192,8 +252,18 @@ function validateInvestigationBundle(bundle) {
     invalid(event !== null && typeof event === 'object');
     invalid(typeof event.callId === 'string');
     if (event.kind === 'model') {
-      object(event, ['kind', 'callId', 'finalOnly', 'context', 'action']);
+      object(event, [
+        'kind',
+        'callId',
+        'finalOnly',
+        'context',
+        'action',
+        ...(current
+          ? ['argumentsRedacted', 'responseBytes', 'responseRedacted']
+          : []),
+      ]);
       invalid(typeof event.finalOnly === 'boolean');
+      if (current) invalid(typeof event.argumentsRedacted === 'boolean');
       object(event.context, [
         'systemPrompt',
         'userPrompt',
@@ -204,9 +274,33 @@ function validateInvestigationBundle(bundle) {
         'usedChars',
       ]);
       try {
-        validateInvestigationAction(event.action);
+        if (current)
+          validateRecordedInvestigationAction(
+            event.action,
+            event.argumentsRedacted
+          );
+        else validateInvestigationAction(event.action);
       } catch {
         invalid(false);
+      }
+      if (current) {
+        invalid(typeof event.responseRedacted === 'boolean');
+        if (event.action.action === 'tool')
+          invalid(event.responseRedacted === event.argumentsRedacted);
+        integer(
+          event.responseBytes,
+          minimumResponseBytes(event.action),
+          config.model.maxResponseBytes
+        );
+        const representationBytes = Buffer.byteLength(
+          JSON.stringify(event.action)
+        );
+        invalid(
+          representationBytes <=
+            investigationResponseRepresentationLimit(config)
+        );
+        if (!event.responseRedacted)
+          invalid(event.responseBytes === representationBytes);
       }
     } else {
       object(event, [
@@ -218,8 +312,10 @@ function validateInvestigationBundle(bundle) {
         'bounds',
         'outcome',
         'result',
+        ...(current ? ['argumentsRedacted'] : []),
       ]);
       invalid(event.kind === 'tool' && typeof event.seed === 'boolean');
+      if (current) invalid(typeof event.argumentsRedacted === 'boolean');
       if (event.seed) {
         invalid(
           ['filesystem.readTextFile', 'filesystem.searchText'].includes(
@@ -232,15 +328,22 @@ function validateInvestigationBundle(bundle) {
         invalid(
           typeof event.arguments[key] === 'string' &&
             event.arguments[key].length > 0 &&
-            event.arguments[key].length <= config.model.maxPromptChars
+            (event.argumentsRedacted ||
+              event.arguments[key].length <= config.model.maxPromptChars)
         );
       } else {
         try {
-          validateInvestigationAction({
+          const action = {
             action: 'tool',
             tool: event.tool,
             arguments: event.arguments,
-          });
+          };
+          if (current)
+            validateRecordedInvestigationAction(
+              action,
+              event.argumentsRedacted
+            );
+          else validateInvestigationAction(action);
         } catch {
           invalid(false);
         }
@@ -336,6 +439,7 @@ async function replayInvestigation(bundle, format) {
       selectedFiles: bundle.selectedFiles,
       searches: bundle.searches,
       trustedInstructions: bundle.trustedInstructions,
+      replayRecord: bundle,
       now: () => bundle.started,
       redactor: { redact: (value) => value, describe: () => bundle.redaction },
       exchange(invocation) {
@@ -347,6 +451,11 @@ async function replayInvestigation(bundle, format) {
           result: _result,
           ...recordedInvocation
         } = event;
+        if (invocation.kind === 'model') {
+          delete recordedInvocation.argumentsRedacted;
+          delete recordedInvocation.responseBytes;
+          delete recordedInvocation.responseRedacted;
+        }
         match(invocation, recordedInvocation);
         return structuredClone(invocation.kind === 'model' ? action : outcome);
       },
@@ -371,6 +480,9 @@ async function replayInvestigation(bundle, format) {
     'request',
     'selectedFiles',
     'searches',
+    ...(bundle.version === INVESTIGATION_REPLAY_VERSION
+      ? ['seedArgumentsRedacted']
+      : []),
     'trustedInstructions',
     'events',
     'evidence',

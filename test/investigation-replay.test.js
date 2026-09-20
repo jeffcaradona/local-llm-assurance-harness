@@ -176,6 +176,336 @@ test('replay permits redaction expansion beyond original byte length', async (t)
   );
 });
 
+test('replay treats expanded redacted model arguments as representations, not executable commands', async (t) => {
+  const pattern = 'x'.repeat(1024);
+  let modelCalls = 0;
+  let toolCalls = 0;
+  const { replayBundle } = await recordedRun({
+    config: { ...config, model: { ...config.model, maxResponseBytes: 1500 } },
+    selectedFiles: [],
+    redactor: createRedactor({ secrets: ['x'] }),
+    async exchange(invocation, executionArguments) {
+      if (invocation.kind === 'model') {
+        return modelCalls++ === 0
+          ? {
+              action: 'tool',
+              tool: 'filesystem.searchText',
+              arguments: { pattern },
+            }
+          : { action: 'final', review: review() };
+      }
+      toolCalls++;
+      assert.equal(executionArguments.pattern, pattern);
+      assert.equal(invocation.argumentsRedacted, true);
+      assert.ok(invocation.arguments.pattern.length > 1024);
+      assert.notEqual(invocation.arguments, executionArguments);
+      return { status: 'success', records: [] };
+    },
+  });
+  assert.equal(replayBundle.version, '1.1.0');
+  assert.equal(replayBundle.investigation.protocolVersion, '1.0.0');
+  assert.ok(replayBundle.events[0].action.arguments.pattern.length > 1500);
+  assert.equal(replayBundle.events[0].responseRedacted, true);
+  assert.equal(
+    replayBundle.events[0].responseBytes,
+    Buffer.byteLength(
+      JSON.stringify({
+        action: 'tool',
+        tool: 'filesystem.searchText',
+        arguments: { pattern },
+      })
+    )
+  );
+  assert.ok(replayBundle.events[0].responseBytes <= 1500);
+  assert.match(
+    await replay(t, replayBundle),
+    /Offline dependency investigation/
+  );
+  assert.equal(modelCalls, 2);
+  assert.equal(toolCalls, 1);
+  for (const bytes of [0, 1, 1501, 1.5, '1100']) {
+    const bundle = structuredClone(replayBundle);
+    bundle.events[0].responseBytes = bytes;
+    await assert.rejects(replay(t, resign(bundle)), {
+      code: 'E_REPLAY_INVALID',
+    });
+  }
+  const oversized = structuredClone(replayBundle);
+  oversized.events[0].action.arguments.pattern = 'x'.repeat(80_001);
+  await assert.rejects(replay(t, resign(oversized)), {
+    code: 'E_REPLAY_INVALID',
+  });
+});
+
+test('redacted final responses retain their original byte budget during offline replay', async (t) => {
+  const rawReview = { ...review(), summary: 'z'.repeat(1000) };
+  const action = { action: 'final', review: rawReview };
+  const { replayBundle } = await recordedRun({
+    config: { ...config, model: { ...config.model, maxResponseBytes: 1500 } },
+    selectedFiles: [],
+    redactor: createRedactor({ secrets: ['z'] }),
+    async exchange() {
+      return action;
+    },
+  });
+  assert.equal(replayBundle.events[0].argumentsRedacted, false);
+  assert.equal(replayBundle.events[0].responseRedacted, true);
+  assert.equal(
+    replayBundle.events[0].responseBytes,
+    Buffer.byteLength(JSON.stringify(action))
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(replayBundle.events[0].action)) > 1500
+  );
+  assert.match(await replay(t, replayBundle), /REDACTED_SECRET/);
+});
+
+test('live redaction expansion is bounded before any tool execution', async () => {
+  let toolCalls = 0;
+  await assert.rejects(
+    recordedRun({
+      config: { ...config, model: { ...config.model, maxResponseBytes: 1500 } },
+      selectedFiles: [],
+      redactor: {
+        redact: (value) => (value === 'x' ? 'y'.repeat(80_001) : value),
+        describe: () => createRedactor().describe(),
+      },
+      async exchange(invocation) {
+        if (invocation.kind === 'tool') toolCalls++;
+        return {
+          action: 'tool',
+          tool: 'filesystem.searchText',
+          arguments: { pattern: 'x' },
+        };
+      },
+    }),
+    { code: 'E_MODEL_RESPONSE_TOO_LARGE' }
+  );
+  assert.equal(toolCalls, 0);
+});
+
+test('offline replay preserves raw seed ordering and distinct seeds whose redacted paths collide', async (t) => {
+  const rawPaths = [
+    'z-private.js',
+    'a-public.js',
+    'z-other.js',
+    'z-private.js',
+  ];
+  const executed = [];
+  const { replayBundle } = await recordedRun({
+    selectedFiles: rawPaths,
+    searches: ['token=abc', 'token=def', 'token=abc'],
+    redactor: createRedactor({ secrets: ['z-private', 'z-other'] }),
+    async exchange(invocation, executionArguments) {
+      if (invocation.kind === 'model')
+        return { action: 'final', review: review() };
+      executed.push(executionArguments);
+      return { status: 'success', records: [] };
+    },
+  });
+  assert.deepEqual(executed, [
+    { path: 'a-public.js' },
+    { path: 'z-other.js' },
+    { path: 'z-private.js' },
+    { pattern: 'token=abc' },
+    { pattern: 'token=def' },
+    { pattern: 'token=abc' },
+  ]);
+  assert.deepEqual(replayBundle.selectedFiles, [
+    'a-public.js',
+    '[REDACTED_SECRET].js',
+    '[REDACTED_SECRET].js',
+  ]);
+  assert.deepEqual(
+    replayBundle.searches,
+    Array(3).fill('token=[REDACTED_FIELD]')
+  );
+  assert.deepEqual(replayBundle.seedArgumentsRedacted.selectedFiles, [
+    false,
+    true,
+    true,
+  ]);
+  assert.equal(replayBundle.investigation.seedCalls, 6);
+  assert.match(
+    await replay(t, replayBundle),
+    /Offline dependency investigation/
+  );
+  assert.equal(executed.length, 6);
+});
+
+test('current replay strictly validates argument-redaction metadata', async (t) => {
+  const { replayBundle } = await recordedRun();
+  const cases = [
+    ['missing seed metadata', (b) => delete b.seedArgumentsRedacted],
+    ['unknown seed metadata', (b) => (b.seedArgumentsRedacted.extra = [])],
+    [
+      'seed metadata count',
+      (b) => (b.seedArgumentsRedacted.selectedFiles = []),
+    ],
+    [
+      'seed metadata type',
+      (b) => (b.seedArgumentsRedacted.selectedFiles[0] = 'false'),
+    ],
+    ['missing tool metadata', (b) => delete b.events[0].argumentsRedacted],
+    ['missing model metadata', (b) => delete b.events[1].argumentsRedacted],
+    ['tool metadata type', (b) => (b.events[0].argumentsRedacted = 'false')],
+    ['model metadata type', (b) => (b.events[1].argumentsRedacted = null)],
+    ['missing response bytes', (b) => delete b.events[1].responseBytes],
+    [
+      'missing response redaction flag',
+      (b) => delete b.events[1].responseRedacted,
+    ],
+    [
+      'response redaction flag type',
+      (b) => (b.events[1].responseRedacted = 'false'),
+    ],
+    ['unredacted response bytes mismatch', (b) => b.events[1].responseBytes++],
+    [
+      'unredacted response bytes below minimum',
+      (b) => (b.events[1].responseBytes = 1),
+    ],
+    [
+      'unredacted response bytes beyond budget',
+      (b) => (b.events[1].responseBytes = 100_001),
+    ],
+    [
+      'inconsistent response redaction flag',
+      (b) => (b.events[3].responseRedacted = true),
+    ],
+    [
+      'redacted discovery action',
+      (b) => (b.events[1].argumentsRedacted = true),
+    ],
+    [
+      'redacted discovery operation',
+      (b) => (b.events[2].argumentsRedacted = true),
+    ],
+    ['redacted final', (b) => (b.events.at(-1).argumentsRedacted = true)],
+    ['legacy version with current metadata', (b) => (b.version = '1.0.0')],
+    [
+      'redacted arguments still reject extra properties',
+      (b) => {
+        b.events[3].argumentsRedacted = true;
+        b.events[3].action.arguments.root = '/';
+      },
+    ],
+    [
+      'redacted actions still reject unapproved tools',
+      (b) => {
+        b.events[3].argumentsRedacted = true;
+        b.events[3].action.tool = 'shell.execute';
+      },
+    ],
+    [
+      'redacted operations still reject unapproved tools',
+      (b) => {
+        b.events[4].argumentsRedacted = true;
+        b.events[4].tool = 'shell.execute';
+      },
+    ],
+    [
+      'redacted actions still reject extra envelope fields',
+      (b) => {
+        b.events[3].argumentsRedacted = true;
+        b.events[3].action.root = '/';
+      },
+    ],
+    [
+      'redacted operations still reject extra arguments',
+      (b) => {
+        b.events[4].argumentsRedacted = true;
+        b.events[4].arguments.root = '/';
+      },
+    ],
+    [
+      'unredacted arguments retain original bounds',
+      (b) => (b.events[3].action.arguments.path = 'x'.repeat(1025)),
+    ],
+    [
+      'unredacted seed duplicates',
+      (b) => {
+        b.selectedFiles.push(b.selectedFiles[0]);
+        b.seedArgumentsRedacted.selectedFiles.push(false);
+      },
+    ],
+    [
+      'unredacted seed order',
+      (b) => {
+        b.selectedFiles.push('a.js');
+        b.seedArgumentsRedacted.selectedFiles.push(false);
+      },
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (t) => {
+      const bundle = structuredClone(replayBundle);
+      mutate(bundle);
+      await assert.rejects(replay(t, resign(bundle)), {
+        code: 'E_REPLAY_INVALID',
+      });
+    });
+  }
+});
+
+test('replay rejects inconsistent seed, action and operation redaction flags', async (t) => {
+  const { replayBundle } = await recordedRun();
+  for (const mutate of [
+    (b) => (b.seedArgumentsRedacted.selectedFiles[0] = true),
+    (b) => (b.events[0].argumentsRedacted = true),
+    (b) => {
+      b.events[3].argumentsRedacted = true;
+      b.events[3].responseRedacted = true;
+    },
+    (b) => (b.events[4].argumentsRedacted = true),
+  ]) {
+    const bundle = structuredClone(replayBundle);
+    mutate(bundle);
+    await assert.rejects(replay(t, resign(bundle)), {
+      code: 'E_REPLAY_MISMATCH',
+    });
+  }
+});
+
+test('investigation v1 reconstruction remains compatible and rejects current metadata', async (t) => {
+  // Explicit reconstruction mode generates the legacy fixture without exposing
+  // legacy recording as an option on the live runInvestigation entry point.
+  const { replayBundle } = await recordedRun({
+    replayRecord: { version: '1.0.0', events: [] },
+  });
+  assert.equal(replayBundle.version, '1.0.0');
+  assert.equal(replayBundle.seedArgumentsRedacted, undefined);
+  assert.ok(
+    replayBundle.events.every((event) => !('argumentsRedacted' in event))
+  );
+  assert.match(
+    await replay(t, replayBundle),
+    /Offline dependency investigation/
+  );
+  const current = await recordedRun();
+  assert.deepEqual(
+    replayBundle.events
+      .filter((event) => event.kind === 'model')
+      .map((event) => event.context),
+    current.replayBundle.events
+      .filter((event) => event.kind === 'model')
+      .map((event) => event.context)
+  );
+  for (const selectedFiles of [
+    ['src/seed.js', 'src/seed.js'],
+    ['src/seed.js', 'a.js'],
+  ]) {
+    const malformed = structuredClone(replayBundle);
+    malformed.selectedFiles = selectedFiles;
+    await assert.rejects(replay(t, resign(malformed)), {
+      code: 'E_REPLAY_INVALID',
+    });
+  }
+  replayBundle.events[0].argumentsRedacted = false;
+  await assert.rejects(replay(t, resign(replayBundle)), {
+    code: 'E_REPLAY_INVALID',
+  });
+});
+
 test('replay preserves explicit absolute seeds and long operator searches', async (t) => {
   const selectedPath = join(process.cwd(), 'src', 'seed.js');
   const pattern = 'x'.repeat(1025);
@@ -640,6 +970,9 @@ test('replay rejects internally inconsistent execution even with a recomputed di
       (b) => {
         b.review.findings[0].evidenceIds = ['ev-9999'];
         b.events.at(-1).action.review = structuredClone(b.review);
+        b.events.at(-1).responseBytes = Buffer.byteLength(
+          JSON.stringify(b.events.at(-1).action)
+        );
       },
     ],
     [
