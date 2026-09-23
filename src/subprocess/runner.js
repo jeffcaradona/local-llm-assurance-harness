@@ -6,7 +6,11 @@ function limitBuffer(buffer, chunk, maxBytes) {
   return next.length > maxBytes ? next.subarray(0, maxBytes) : next;
 }
 
-export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
+export function createSubprocessRunner({
+  spawn = nodeSpawn,
+  platform = process.platform,
+  terminationGraceMs = 500,
+} = {}) {
   return {
     async run(command, args, options = {}) {
       const {
@@ -26,11 +30,15 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
       }
 
       return new Promise((resolve, reject) => {
-        let settled = false;
+        let callerSettled = false;
+        let observingChild = true;
+        let terminationRequested = false;
         let stdout = Buffer.alloc(0);
         let stderr = Buffer.alloc(0);
         let stdoutTruncated = false;
         let stderrTruncated = false;
+        let timeoutTimer;
+        let escalationTimer;
 
         const baseEnv = Object.fromEntries(
           ['PATH', 'Path', 'SystemRoot', 'ComSpec', 'PATHEXT']
@@ -44,80 +52,94 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
 
-        const settle = (fn, value) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
+        const removeOperationListeners = () => {
+          clearTimeout(timeoutTimer);
           signal?.removeEventListener('abort', onAbort);
-          child.stdout?.removeAllListeners();
-          child.stderr?.removeAllListeners();
-          child.removeAllListeners();
+          child.stdout?.off('data', onStdout);
+          child.stderr?.off('data', onStderr);
+        };
+
+        const stopObservingChild = () => {
+          if (!observingChild) return;
+          observingChild = false;
+          clearTimeout(escalationTimer);
+          child.off('error', onError);
+          child.off('close', onClose);
+        };
+
+        const settleCaller = (fn, value) => {
+          if (callerSettled) return;
+          callerSettled = true;
+          removeOperationListeners();
           fn(value);
         };
 
-        const stop = () => {
-          if (process.platform === 'win32') {
-            child.kill();
-          } else {
-            child.kill('SIGTERM');
+        const requestTermination = (reason) => {
+          if (terminationRequested || !observingChild) return;
+          terminationRequested = true;
+          settleCaller(reject, reason);
+
+          try {
+            child.kill(platform === 'win32' ? undefined : 'SIGTERM');
+          } catch {
+            // Termination failures do not replace the operation's stable error.
           }
+
+          if (!observingChild) return;
+          escalationTimer = setTimeout(() => {
+            escalationTimer = undefined;
+            if (!observingChild) return;
+            try {
+              // POSIX SIGKILL is stronger than SIGTERM. Node maps supported
+              // signals to direct-process termination on Windows, so this is
+              // the strongest available retry there. Neither path covers descendants.
+              child.kill('SIGKILL');
+            } catch {
+              // Cleanup cannot replace the original abort/timeout failure.
+            }
+            stopObservingChild();
+          }, terminationGraceMs);
         };
 
         const onAbort = () => {
-          stop();
-          settle(reject, new HarnessError('E_ABORTED', 'Subprocess aborted.'));
+          requestTermination(
+            new HarnessError('E_ABORTED', 'Subprocess aborted.')
+          );
         };
 
-        const timer = setTimeout(() => {
-          stop();
-          settle(
+        const onError = (error) => {
+          if (terminationRequested) return;
+          settleCaller(
             reject,
-            new HarnessError(
-              'E_SUBPROCESS_TIMEOUT',
-              'Subprocess timeout exceeded.',
-              { command }
-            )
+            error.code === 'ENOENT'
+              ? new HarnessError(
+                  'E_EXECUTABLE_NOT_FOUND',
+                  'Required executable is unavailable.',
+                  { command }
+                )
+              : new HarnessError(
+                  'E_SUBPROCESS_SPAWN',
+                  'Subprocess failed to start.',
+                  { command, cause: error.message }
+                )
           );
-        }, timeoutMs);
+          stopObservingChild();
+        };
 
-        child.on('error', (error) => {
-          if (error.code === 'ENOENT') {
-            settle(
-              reject,
-              new HarnessError(
-                'E_EXECUTABLE_NOT_FOUND',
-                'Required executable is unavailable.',
-                { command }
-              )
-            );
-            return;
-          }
-          settle(
-            reject,
-            new HarnessError(
-              'E_SUBPROCESS_SPAWN',
-              'Subprocess failed to start.',
-              { command, cause: error.message }
-            )
-          );
-        });
-
-        child.stdout?.on('data', (chunk) => {
+        const onStdout = (chunk) => {
           const next = limitBuffer(stdout, chunk, stdoutMaxBytes);
-          if (next.length < stdout.length + chunk.length)
-            stdoutTruncated = true;
+          if (next.length < stdout.length + chunk.length) stdoutTruncated = true;
           stdout = next;
-        });
+        };
 
-        child.stderr?.on('data', (chunk) => {
+        const onStderr = (chunk) => {
           const next = limitBuffer(stderr, chunk, stderrMaxBytes);
-          if (next.length < stderr.length + chunk.length)
-            stderrTruncated = true;
+          if (next.length < stderr.length + chunk.length) stderrTruncated = true;
           stderr = next;
-        });
+        };
 
-        child.on('close', (exitCode, termSignal) => {
-          settle(resolve, {
+        const onClose = (exitCode, termSignal) => {
+          settleCaller(resolve, {
             exitCode,
             termSignal,
             stdout: stdout.toString('utf8'),
@@ -125,9 +147,25 @@ export function createSubprocessRunner({ spawn = nodeSpawn } = {}) {
             stdoutTruncated,
             stderrTruncated,
           });
-        });
+          stopObservingChild();
+        };
 
+        child.on('error', onError);
+        child.stdout?.on('data', onStdout);
+        child.stderr?.on('data', onStderr);
+        child.on('close', onClose);
+
+        timeoutTimer = setTimeout(() => {
+          requestTermination(
+            new HarnessError(
+              'E_SUBPROCESS_TIMEOUT',
+              'Subprocess timeout exceeded.',
+              { command }
+            )
+          );
+        }, timeoutMs);
         signal?.addEventListener('abort', onAbort, { once: true });
+        if (signal?.aborted) onAbort();
       });
     },
   };
