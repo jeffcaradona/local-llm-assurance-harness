@@ -38,6 +38,22 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+async function expectProviderError(handler, expected, overrides) {
+  const server = await withServer(handler);
+  try {
+    await assert.rejects(
+      () =>
+        providerFor(server, overrides).complete({
+          systemPrompt: 's',
+          userPrompt: 'u',
+        }),
+      expected
+    );
+  } finally {
+    await closeServer(server);
+  }
+}
+
 test('provider rejects oversized successful response body', async () => {
   const server = await withServer((_, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -63,28 +79,15 @@ test('provider rejects oversized successful response body', async () => {
 
 test('provider rejects redirects without following them', async () => {
   let redirectedRequest = false;
-  const server = await withServer((req, res) => {
-    if (req.url === '/redirected') {
-      redirectedRequest = true;
+  await expectProviderError(
+    (req, res) => {
+      redirectedRequest ||= req.url === '/redirected';
+      res.writeHead(302, { location: '/redirected' });
       res.end();
-      return;
-    }
-    res.writeHead(302, { location: '/redirected' });
-    res.end();
-  });
-  try {
-    await assert.rejects(
-      () =>
-        providerFor(server).complete({
-          systemPrompt: 's',
-          userPrompt: 'u',
-        }),
-      { code: 'E_MODEL_REDIRECT_FORBIDDEN' }
-    );
-    assert.equal(redirectedRequest, false);
-  } finally {
-    await closeServer(server);
-  }
+    },
+    { code: 'E_MODEL_REDIRECT_FORBIDDEN' }
+  );
+  assert.equal(redirectedRequest, false);
 });
 
 test('provider maps its request deadline to model timeout', async () => {
@@ -125,68 +128,42 @@ test('provider preserves caller cancellation separately from timeout', async () 
 });
 
 test('provider maps malformed outer HTTP JSON to response parse error', async () => {
-  const server = await withServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{not-json');
-  });
-  try {
-    await assert.rejects(
-      () =>
-        providerFor(server).complete({
-          systemPrompt: 's',
-          userPrompt: 'u',
-        }),
-      { code: 'E_MODEL_RESPONSE_PARSE' }
-    );
-  } finally {
-    await closeServer(server);
-  }
+  await expectProviderError(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{not-json');
+    },
+    { code: 'E_MODEL_RESPONSE_PARSE' }
+  );
 });
 
 test('provider maps non-success responses to HTTP errors with a preview', async () => {
-  const server = await withServer((_req, res) => {
-    res.writeHead(429, { 'content-type': 'text/plain' });
-    res.end('slow down');
-  });
-  try {
-    await assert.rejects(
-      () =>
-        providerFor(server).complete({
-          systemPrompt: 's',
-          userPrompt: 'u',
-        }),
-      {
-        code: 'E_MODEL_HTTP_ERROR',
-        details: { status: 429, bodyPreview: 'slow down' },
-      }
-    );
-  } finally {
-    await closeServer(server);
-  }
+  await expectProviderError(
+    (_req, res) => {
+      res.writeHead(429, { 'content-type': 'text/plain' });
+      res.end('slow down');
+    },
+    {
+      code: 'E_MODEL_HTTP_ERROR',
+      details: { status: 429, bodyPreview: 'slow down' },
+    }
+  );
 });
 
 test('oversized non-success response remains a bounded HTTP error', async () => {
-  const server = await withServer((_req, res) => {
-    res.writeHead(500, { 'content-type': 'text/plain' });
-    res.end('x'.repeat(10_000));
-  });
-  try {
-    await assert.rejects(
-      () =>
-        providerFor(server, { maxResponseBytes: 100 }).complete({
-          systemPrompt: 's',
-          userPrompt: 'u',
-        }),
-      (error) => {
-        assert.equal(error.code, 'E_MODEL_HTTP_ERROR');
-        assert.equal(error.details.status, 500);
-        assert.equal(Buffer.byteLength(error.details.bodyPreview), 500);
-        return true;
-      }
-    );
-  } finally {
-    await closeServer(server);
-  }
+  await expectProviderError(
+    (_req, res) => {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('x'.repeat(10_000));
+    },
+    (error) => {
+      assert.equal(error.code, 'E_MODEL_HTTP_ERROR');
+      assert.equal(error.details.status, 500);
+      assert.equal(Buffer.byteLength(error.details.bodyPreview), 500);
+      return true;
+    },
+    { maxResponseBytes: 100 }
+  );
 });
 
 test('provider parses OpenAI-compatible JSON content', async () => {

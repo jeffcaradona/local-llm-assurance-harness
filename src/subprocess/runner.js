@@ -33,6 +33,7 @@ export function createSubprocessRunner({
         let callerSettled = false;
         let observingChild = true;
         let terminationRequested = false;
+        let terminationReason;
         let stdout = Buffer.alloc(0);
         let stderr = Buffer.alloc(0);
         let stdoutTruncated = false;
@@ -77,7 +78,8 @@ export function createSubprocessRunner({
         const requestTermination = (reason) => {
           if (terminationRequested || !observingChild) return;
           terminationRequested = true;
-          settleCaller(reject, reason);
+          terminationReason = reason;
+          removeOperationListeners();
 
           try {
             child.kill(platform === 'win32' ? undefined : 'SIGTERM');
@@ -97,6 +99,7 @@ export function createSubprocessRunner({
             } catch {
               // Cleanup cannot replace the original abort/timeout failure.
             }
+            settleCaller(reject, terminationReason);
             stopObservingChild();
           }, terminationGraceMs);
         };
@@ -128,25 +131,31 @@ export function createSubprocessRunner({
 
         const onStdout = (chunk) => {
           const next = limitBuffer(stdout, chunk, stdoutMaxBytes);
-          if (next.length < stdout.length + chunk.length) stdoutTruncated = true;
+          if (next.length < stdout.length + chunk.length)
+            stdoutTruncated = true;
           stdout = next;
         };
 
         const onStderr = (chunk) => {
           const next = limitBuffer(stderr, chunk, stderrMaxBytes);
-          if (next.length < stderr.length + chunk.length) stderrTruncated = true;
+          if (next.length < stderr.length + chunk.length)
+            stderrTruncated = true;
           stderr = next;
         };
 
         const onClose = (exitCode, termSignal) => {
-          settleCaller(resolve, {
-            exitCode,
-            termSignal,
-            stdout: stdout.toString('utf8'),
-            stderr: stderr.toString('utf8'),
-            stdoutTruncated,
-            stderrTruncated,
-          });
+          if (terminationRequested) {
+            settleCaller(reject, terminationReason);
+          } else {
+            settleCaller(resolve, {
+              exitCode,
+              termSignal,
+              stdout: stdout.toString('utf8'),
+              stderr: stderr.toString('utf8'),
+              stdoutTruncated,
+              stderrTruncated,
+            });
+          }
           stopObservingChild();
         };
 

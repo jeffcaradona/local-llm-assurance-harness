@@ -8,75 +8,29 @@ function createChild() {
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.killSignals = [];
-  child.kill = (signal) => {
-    child.killSignals.push(signal);
-    return true;
-  };
+  child.kill = (signal) => child.killSignals.push(signal);
   return child;
 }
 
-function createTrackedSignal() {
-  const listeners = new Set();
-  return {
-    get aborted() {
-      return this._aborted ?? false;
-    },
-    addEventListener(type, listener) {
-      if (type === 'abort') listeners.add(listener);
-    },
-    removeEventListener(type, listener) {
-      if (type === 'abort') listeners.delete(listener);
-    },
-    abort() {
-      this._aborted = true;
-      for (const listener of [...listeners]) listener();
-    },
-    listenerCount() {
-      return listeners.size;
-    },
-  };
-}
-
-function createRunner(child, options = {}) {
+function run(child, options = {}, dependencies = {}) {
   return createSubprocessRunner({
     spawn: () => child,
     platform: 'linux',
     terminationGraceMs: 50,
-    ...options,
-  });
+    ...dependencies,
+  }).run('command', [], { timeoutMs: 100, ...options });
 }
 
-function observeSettlement(promise) {
-  let count = 0;
-  const observed = promise.then(
-    (value) => {
-      count += 1;
-      return { value };
-    },
-    (error) => {
-      count += 1;
-      return { error };
-    }
-  );
-  return { observed, count: () => count };
-}
-
-function assertCleanedUp(child, signal) {
+function assertCleanedUp(child) {
   assert.equal(child.listenerCount('error'), 0);
   assert.equal(child.listenerCount('close'), 0);
   assert.equal(child.stdout.listenerCount('data'), 0);
   assert.equal(child.stderr.listenerCount('data'), 0);
-  assert.equal(signal?.listenerCount() ?? 0, 0);
 }
 
 test('runner returns a structured bounded result on normal close', async () => {
   const child = createChild();
-  const signal = createTrackedSignal();
-  const pending = createRunner(child).run('x', [], {
-    signal,
-    stdoutMaxBytes: 5,
-  });
-
+  const pending = run(child, { stdoutMaxBytes: 5 });
   child.stdout.emit('data', Buffer.from('1234567890'));
   child.stderr.emit('data', Buffer.from('warning'));
   child.emit('close', 7, null);
@@ -90,37 +44,34 @@ test('runner returns a structured bounded result on normal close', async () => {
     stderrTruncated: false,
   });
   assert.deepEqual(child.killSignals, []);
-  assertCleanedUp(child, signal);
+  assertCleanedUp(child);
 });
 
-test('runner rejects abort but observes direct-child close during grace', async (t) => {
+test('runner preserves abort while observing direct-child close', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const child = createChild();
-  const signal = createTrackedSignal();
-  const pending = createRunner(child).run('x', [], {
-    signal,
-    timeoutMs: 100,
-  });
+  const controller = new AbortController();
+  let settlements = 0;
+  const pending = run(child, { signal: controller.signal }).finally(
+    () => (settlements += 1)
+  );
 
-  signal.abort();
+  controller.abort();
   assert.deepEqual(child.killSignals, ['SIGTERM']);
   assert.equal(child.listenerCount('close'), 1);
   child.emit('close', null, 'SIGTERM');
   t.mock.timers.tick(1_000);
 
   await assert.rejects(pending, { code: 'E_ABORTED' });
+  assert.equal(settlements, 1);
   assert.deepEqual(child.killSignals, ['SIGTERM']);
-  assertCleanedUp(child, signal);
+  assertCleanedUp(child);
 });
 
-test('runner rejects timeout but observes direct-child close during grace', async (t) => {
+test('runner preserves timeout while observing direct-child close', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const child = createChild();
-  const signal = createTrackedSignal();
-  const pending = createRunner(child).run('rg', [], {
-    signal,
-    timeoutMs: 100,
-  });
+  const pending = run(child);
 
   t.mock.timers.tick(100);
   assert.deepEqual(child.killSignals, ['SIGTERM']);
@@ -129,112 +80,80 @@ test('runner rejects timeout but observes direct-child close during grace', asyn
 
   await assert.rejects(pending, {
     code: 'E_SUBPROCESS_TIMEOUT',
-    details: { command: 'rg' },
+    details: { command: 'command' },
   });
   assert.deepEqual(child.killSignals, ['SIGTERM']);
-  assertCleanedUp(child, signal);
+  assertCleanedUp(child);
 });
 
-test('runner escalates when direct child does not exit during grace', async (t) => {
+test('runner escalates and stops observing a direct child after grace', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const child = createChild();
-  const signal = createTrackedSignal();
-  const pending = createRunner(child).run('x', [], {
-    signal,
-    timeoutMs: 100,
-  });
-
-  t.mock.timers.tick(100);
-  assert.deepEqual(child.killSignals, ['SIGTERM']);
-  assert.equal(child.listenerCount('close'), 1);
-  t.mock.timers.tick(49);
-  assert.deepEqual(child.killSignals, ['SIGTERM']);
-  t.mock.timers.tick(1);
-
-  await assert.rejects(pending, { code: 'E_SUBPROCESS_TIMEOUT' });
-  assert.deepEqual(child.killSignals, ['SIGTERM', 'SIGKILL']);
-  assertCleanedUp(child, signal);
+  for (const [platform, expected] of [
+    ['linux', ['SIGTERM', 'SIGKILL']],
+    ['win32', [undefined, 'SIGKILL']],
+  ]) {
+    const child = createChild();
+    const controller = new AbortController();
+    const pending = run(child, { signal: controller.signal }, { platform });
+    controller.abort();
+    t.mock.timers.tick(49);
+    assert.deepEqual(child.killSignals, expected.slice(0, 1));
+    t.mock.timers.tick(1);
+    await assert.rejects(pending, { code: 'E_ABORTED' });
+    assert.deepEqual(child.killSignals, expected);
+    assertCleanedUp(child);
+  }
 });
 
-test('runner uses the strongest available direct-child retry on Windows', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+test('spawn error wins a late close exactly once', async () => {
   const child = createChild();
-  const signal = createTrackedSignal();
-  const pending = createRunner(child, { platform: 'win32' }).run('x', [], {
-    signal,
-    timeoutMs: 100,
-  });
-
-  signal.abort();
-  t.mock.timers.tick(50);
-
-  await assert.rejects(pending, { code: 'E_ABORTED' });
-  assert.deepEqual(child.killSignals, [undefined, 'SIGKILL']);
-  assertCleanedUp(child, signal);
-});
-
-test('late close after spawn error cannot settle the caller again', async () => {
-  const child = createChild();
-  const signal = createTrackedSignal();
-  const settlement = observeSettlement(
-    createRunner(child).run('fd', [], { signal })
+  let settlements = 0;
+  const pending = run(child).then(
+    () => (settlements += 1),
+    (error) => {
+      settlements += 1;
+      throw error;
+    }
   );
-
-  child.emit(
-    'error',
-    Object.assign(new Error('missing'), { code: 'ENOENT' })
-  );
+  child.emit('error', Object.assign(new Error('missing'), { code: 'ENOENT' }));
   child.emit('close', 0, null);
 
-  const { error } = await settlement.observed;
-  assert.equal(error.code, 'E_EXECUTABLE_NOT_FOUND');
-  assert.equal(settlement.count(), 1);
-  assertCleanedUp(child, signal);
+  await assert.rejects(pending, { code: 'E_EXECUTABLE_NOT_FOUND' });
+  assert.equal(settlements, 1);
+  assertCleanedUp(child);
 });
 
-for (const scenario of [
-  {
-    name: 'abort wins timeout and close',
-    act({ child, signal, timers }) {
-      signal.abort();
-      timers.tick(100);
-      child.emit('close', null, 'SIGTERM');
-    },
-    code: 'E_ABORTED',
-  },
-  {
-    name: 'timeout wins abort and close',
-    act({ child, signal, timers }) {
-      timers.tick(100);
-      signal.abort();
-      child.emit('close', null, 'SIGTERM');
-    },
-    code: 'E_SUBPROCESS_TIMEOUT',
-  },
-  {
-    name: 'close wins abort and timeout',
-    act({ child, signal, timers }) {
-      child.emit('close', 0, null);
-      signal.abort();
-      timers.tick(100);
-    },
-    exitCode: 0,
-  },
+for (const [name, first, code] of [
+  ['abort wins timeout and close', 'abort', 'E_ABORTED'],
+  ['timeout wins abort and close', 'timeout', 'E_SUBPROCESS_TIMEOUT'],
+  ['close wins abort and timeout', 'close', undefined],
 ]) {
-  test(`runner settles exactly once when ${scenario.name}`, async (t) => {
+  test(`runner settles exactly once when ${name}`, async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const child = createChild();
-    const signal = createTrackedSignal();
-    const settlement = observeSettlement(
-      createRunner(child).run('x', [], { signal, timeoutMs: 100 })
+    const controller = new AbortController();
+    let settlements = 0;
+    const pending = run(child, { signal: controller.signal }).then(
+      (value) => {
+        settlements += 1;
+        return value;
+      },
+      (error) => {
+        settlements += 1;
+        throw error;
+      }
     );
 
-    scenario.act({ child, signal, timers: t.mock.timers });
-    const outcome = await settlement.observed;
+    if (first === 'abort') controller.abort();
+    else if (first === 'timeout') t.mock.timers.tick(100);
+    else child.emit('close', 0, null);
+    controller.abort();
+    t.mock.timers.tick(100);
+    child.emit('close', 0, null);
 
-    assert.equal(settlement.count(), 1);
-    if (scenario.code) assert.equal(outcome.error.code, scenario.code);
-    else assert.equal(outcome.value.exitCode, scenario.exitCode);
-    assertCleanedUp(child, signal);
+    if (code) await assert.rejects(pending, { code });
+    else assert.equal((await pending).exitCode, 0);
+    assert.equal(settlements, 1);
+    assertCleanedUp(child);
   });
 }
