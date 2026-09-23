@@ -23,6 +23,28 @@ async function readBodyBounded(response, maxBytes) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+async function readBodyPreview(response, maxBytes) {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  let retained = 0;
+  const chunks = [];
+
+  while (retained < maxBytes) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    const keep = chunk.subarray(0, maxBytes - retained);
+    chunks.push(keep);
+    retained += keep.length;
+    if (keep.length < chunk.length || retained === maxBytes) {
+      await reader.cancel().catch(() => {});
+      break;
+    }
+  }
+
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export function createOpenAICompatibleProvider(config) {
   const normalizedBase = config.baseUrl.endsWith('/')
     ? config.baseUrl
@@ -98,21 +120,22 @@ export function createOpenAICompatibleProvider(config) {
           );
         }
 
-        const bodyText = await readBodyBounded(
-          response,
-          config.maxResponseBytes
-        );
-
         if (!response.ok) {
+          const bodyPreview = await readBodyPreview(response, 500);
           throw new HarnessError(
             'E_MODEL_HTTP_ERROR',
             'Model endpoint returned failure status.',
             {
               status: response.status,
-              bodyPreview: bodyText.slice(0, 500),
+              bodyPreview,
             }
           );
         }
+
+        const bodyText = await readBodyBounded(
+          response,
+          config.maxResponseBytes
+        );
 
         let parsed;
         try {

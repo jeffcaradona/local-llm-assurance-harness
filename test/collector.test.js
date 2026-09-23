@@ -68,6 +68,38 @@ test('invalid search records fail with stable errors rather than raw exceptions'
   }
 });
 
+test('search byte metadata measures original and retained redacted content', async (t) => {
+  const root = await fixture(t);
+  await writeFile(join(root, 'match.txt'), 'token=short');
+  const original = 'token=short';
+  const collector = createFilesystemCollector({
+    rootPath: root,
+    runner: {
+      run: async () => ({
+        exitCode: 0,
+        stderr: '',
+        stdout: JSON.stringify({
+          type: 'match',
+          data: {
+            path: { text: 'match.txt' },
+            line_number: 1,
+            lines: { text: original },
+          },
+        }),
+      }),
+    },
+    limits,
+    redactor: createRedactor(),
+  });
+
+  const [match] = await collector.searchText({ pattern: 'token' });
+
+  assert.equal(match.content, 'token=[REDACTED_FIELD]');
+  assert.equal(match.originalBytes, Buffer.byteLength(original));
+  assert.equal(match.retainedBytes, Buffer.byteLength(match.content));
+  assert.notEqual(match.retainedBytes, match.originalBytes);
+});
+
 test('already aborted read is rejected', async (t) => {
   const root = await fixture(t);
   const file = join(root, 'a.txt');

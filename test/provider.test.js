@@ -14,7 +14,47 @@ function withServer(handler) {
   });
 }
 
-test('provider rejects oversized response body', async () => {
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function providerFor(server, overrides = {}) {
+  return createOpenAICompatibleProvider({
+    baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    model: 'm',
+    maxPromptChars: 1000,
+    timeoutMs: 1000,
+    maxResponseBytes: 10_000,
+    ...overrides,
+  });
+}
+
+async function closeServer(server) {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+async function expectProviderError(handler, expected, overrides) {
+  const server = await withServer(handler);
+  try {
+    await assert.rejects(
+      () =>
+        providerFor(server, overrides).complete({
+          systemPrompt: 's',
+          userPrompt: 'u',
+        }),
+      expected
+    );
+  } finally {
+    await closeServer(server);
+  }
+}
+
+test('provider rejects oversized successful response body', async () => {
   const server = await withServer((_, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('x'.repeat(1024));
@@ -35,6 +75,95 @@ test('provider rejects oversized response body', async () => {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('provider rejects redirects without following them', async () => {
+  let redirectedRequest = false;
+  await expectProviderError(
+    (req, res) => {
+      redirectedRequest ||= req.url === '/redirected';
+      res.writeHead(302, { location: '/redirected' });
+      res.end();
+    },
+    { code: 'E_MODEL_REDIRECT_FORBIDDEN' }
+  );
+  assert.equal(redirectedRequest, false);
+});
+
+test('provider maps its request deadline to model timeout', async () => {
+  const received = deferred();
+  const server = await withServer((_req, _res) => {
+    received.resolve();
+  });
+  try {
+    const pending = providerFor(server, { timeoutMs: 25 }).complete({
+      systemPrompt: 's',
+      userPrompt: 'u',
+    });
+    await received.promise;
+    await assert.rejects(pending, { code: 'E_MODEL_TIMEOUT' });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('provider preserves caller cancellation separately from timeout', async () => {
+  const received = deferred();
+  const server = await withServer((_req, _res) => {
+    received.resolve();
+  });
+  const controller = new AbortController();
+  try {
+    const pending = providerFor(server, { timeoutMs: 10_000 }).complete({
+      systemPrompt: 's',
+      userPrompt: 'u',
+      signal: controller.signal,
+    });
+    await received.promise;
+    controller.abort();
+    await assert.rejects(pending, { code: 'E_ABORTED' });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('provider maps malformed outer HTTP JSON to response parse error', async () => {
+  await expectProviderError(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{not-json');
+    },
+    { code: 'E_MODEL_RESPONSE_PARSE' }
+  );
+});
+
+test('provider maps non-success responses to HTTP errors with a preview', async () => {
+  await expectProviderError(
+    (_req, res) => {
+      res.writeHead(429, { 'content-type': 'text/plain' });
+      res.end('slow down');
+    },
+    {
+      code: 'E_MODEL_HTTP_ERROR',
+      details: { status: 429, bodyPreview: 'slow down' },
+    }
+  );
+});
+
+test('oversized non-success response remains a bounded HTTP error', async () => {
+  await expectProviderError(
+    (_req, res) => {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('x'.repeat(10_000));
+    },
+    (error) => {
+      assert.equal(error.code, 'E_MODEL_HTTP_ERROR');
+      assert.equal(error.details.status, 500);
+      assert.equal(Buffer.byteLength(error.details.bodyPreview), 500);
+      return true;
+    },
+    { maxResponseBytes: 100 }
+  );
 });
 
 test('provider parses OpenAI-compatible JSON content', async () => {

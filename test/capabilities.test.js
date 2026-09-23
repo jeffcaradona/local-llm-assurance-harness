@@ -159,6 +159,28 @@ test('read policy rejects Windows traversal and sensitive variants before collec
   }
 });
 
+test(
+  'Windows capability containment rejects a path on another drive',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const registry = createCapabilityRegistry({
+      rootPath: 'C:\\repo',
+      collector: {
+        readTextFile: async () =>
+          assert.fail('cross-drive read reached collector'),
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        registry
+          .get('filesystem.readTextFile')
+          .invoke({ path: 'D:\\outside\\file.txt' }),
+      { code: 'E_PATH_OUT_OF_ROOT' }
+    );
+  }
+);
+
 test('capability contracts describe actual arguments and validate strictly', () => {
   const registry = createCapabilityRegistry({
     rootPath: '/repo',

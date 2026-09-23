@@ -177,7 +177,9 @@ Run `ollama ps` during a review to see the context in use. For a larger output b
 - No Git diff review.
 - Investigation is bounded, single-model, and sequential; it is not a general autonomous agent.
 - No `az`, `oc`, `itsoctrl`, MCP transport, Express API, or persistent jobs yet.
-- Child process termination targets the direct child only; descendant termination is not guaranteed.
+- Subprocess abort/timeout requests direct-child termination, observes a short
+  grace period, then escalates if needed. This does not guarantee descendant
+  termination.
 - Aborting the HTTP request is not proof that the server stopped inference.
 - Redaction reduces accidental exposure but is not complete secret protection.
 - OpenAI-compatible servers vary; request options are best-effort and still locally validated. Support for `response_format: json_schema` and `reasoning_effort` differs between servers, which may ignore or reject them.

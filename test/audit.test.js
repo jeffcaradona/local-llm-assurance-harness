@@ -138,6 +138,37 @@ test('a failed publication removes only files created by this run', async (t) =>
   );
 });
 
+test(
+  'Windows artifact containment treats another drive as outside the repository',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const calls = [];
+    const result = await persistRunArtifacts({
+      reviewedRoot: 'C:\\repo',
+      outputDir: 'D:\\outside',
+      runId: 'run',
+      manifest: { status: 'success' },
+      filesystem: {
+        realpath: async (path) => path,
+        mkdir: async (path) => calls.push(['mkdir', path]),
+        writeFile: async (path) => calls.push(['writeFile', path]),
+        link: async (source, destination) =>
+          calls.push(['link', source, destination]),
+        rm: async (path) => calls.push(['rm', path]),
+      },
+    });
+
+    assert.equal(result.manifestPath, 'D:\\outside\\run.manifest.json');
+    assert.equal(
+      calls.some(
+        ([operation, , destination]) =>
+          operation === 'link' && destination === result.manifestPath
+      ),
+      true
+    );
+  }
+);
+
 for (const code of ['E_ABORTED', 'E_INVESTIGATION_TIMEOUT']) {
   test(`orchestration releases admission during stalled root validation on ${code}`, async (t) => {
     const inputs = await fixture(t);

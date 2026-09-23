@@ -347,13 +347,15 @@ export function createFilesystemCollector({
         }
         throw error;
       }
+      const original = item.data.lines.text;
+      const redacted = redactor.redact(original);
       matches.push({
         relativePath: relPath,
         lineStart: item.data.line_number,
         lineEnd: item.data.line_number,
-        content: redactor.redact(item.data.lines.text),
-        retainedBytes: Buffer.byteLength(item.data.lines.text),
-        originalBytes: Buffer.byteLength(item.data.lines.text),
+        content: redacted,
+        retainedBytes: Buffer.byteLength(redacted),
+        originalBytes: Buffer.byteLength(original),
         truncated: false,
         redaction: redactor.describe(),
       });
